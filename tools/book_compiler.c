@@ -229,20 +229,31 @@ int main(void) {
     printf("#include \"zobrist.h\"\n\n");
     printf("#include <stdlib.h>\n\n");
     printf("bool option_own_book = true;\n\n");
-    printf("struct BookEntry {\n");
-    printf("    uint64_t key;\n");
-    printf("    uint16_t move;\n");
-    printf("    uint16_t weight;\n");
-    printf("};\n\n");
-    printf("static const struct BookEntry book_table[%d] = {\n", total_entries);
+    printf("// Sorted by key. Parallel arrays avoid struct padding (11 bytes/entry vs 16).\n");
+    printf("#define BOOK_SIZE %d\n\n", total_entries);
+    printf("// clang-format off\n");
+    printf("static const uint64_t book_keys[BOOK_SIZE] = {\n");
     for (int i = 0; i < total_entries; ++i) {
-        printf("    { 0x%016llxULL, 0x%04x, %u },\n",
+        printf("%s0x%016llxULL,%s", (i % 4 == 0) ? "    " : " ",
                (unsigned long long)entries[i].key,
-               (unsigned int)entries[i].move,
-               (unsigned int)entries[i].weight);
+               (i % 4 == 3 || i == total_entries - 1) ? "\n" : "");
     }
     printf("};\n\n");
-    printf("#define BOOK_SIZE (sizeof(book_table) / sizeof(book_table[0]))\n\n");
+    printf("static const uint16_t book_moves[BOOK_SIZE] = {\n");
+    for (int i = 0; i < total_entries; ++i) {
+        printf("%s0x%04x,%s", (i % 10 == 0) ? "    " : " ",
+               (unsigned int)entries[i].move,
+               (i % 10 == 9 || i == total_entries - 1) ? "\n" : "");
+    }
+    printf("};\n\n");
+    printf("static const uint8_t book_weights[BOOK_SIZE] = {\n");
+    for (int i = 0; i < total_entries; ++i) {
+        printf("%s%3u,%s", (i % 16 == 0) ? "    " : " ",
+               (unsigned int)entries[i].weight,
+               (i % 16 == 15 || i == total_entries - 1) ? "\n" : "");
+    }
+    printf("};\n");
+    printf("// clang-format on\n\n");
     printf("static uint64_t book_prng_state = 0x853c49e6748fea9bULL;\n\n");
     printf("static inline uint32_t book_rand(void) {\n");
     printf("    book_prng_state ^= book_prng_state >> 12;\n");
@@ -250,11 +261,11 @@ int main(void) {
     printf("    book_prng_state ^= book_prng_state >> 27;\n");
     printf("    return (uint32_t)((book_prng_state * 0x2545F4914F6CDD1DULL) >> 32);\n");
     printf("}\n\n");
-    printf("static int cmp_book_entry(const void *a, const void *b) {\n");
-    printf("    const struct BookEntry *ea = (const struct BookEntry *)a;\n");
-    printf("    const struct BookEntry *eb = (const struct BookEntry *)b;\n");
-    printf("    if (ea->key < eb->key) return -1;\n");
-    printf("    if (ea->key > eb->key) return 1;\n");
+    printf("static int cmp_book_key(const void *a, const void *b) {\n");
+    printf("    uint64_t ka = *(const uint64_t *)a;\n");
+    printf("    uint64_t kb = *(const uint64_t *)b;\n");
+    printf("    if (ka < kb) return -1;\n");
+    printf("    if (ka > kb) return 1;\n");
     printf("    return 0;\n");
     printf("}\n\n");
     printf("void init_book(void) {\n");
@@ -263,27 +274,26 @@ int main(void) {
     printf("move_t probe_book(const struct Board *b) {\n");
     printf("    if (!option_own_book || BOOK_SIZE == 0) return 0;\n");
     printf("    uint64_t key = board_key(b);\n");
-    printf("    struct BookEntry target = { .key = key, .move = 0, .weight = 0 };\n");
-    printf("    const struct BookEntry *match = (const struct BookEntry *)bsearch(\n");
-    printf("        &target, book_table, BOOK_SIZE, sizeof(struct BookEntry), cmp_book_entry);\n");
+    printf("    const uint64_t *match = (const uint64_t *)bsearch(\n");
+    printf("        &key, book_keys, BOOK_SIZE, sizeof(uint64_t), cmp_book_key);\n");
     printf("    if (!match) return 0;\n\n");
-    printf("    int first = (int)(match - book_table);\n");
-    printf("    while (first > 0 && book_table[first - 1].key == key)\n");
+    printf("    int first = (int)(match - book_keys);\n");
+    printf("    while (first > 0 && book_keys[first - 1] == key)\n");
     printf("        first--;\n\n");
     printf("    int last = first;\n");
     printf("    int total_weight = 0;\n");
-    printf("    while (last < (int)BOOK_SIZE && book_table[last].key == key) {\n");
-    printf("        total_weight += book_table[last].weight;\n");
+    printf("    while (last < BOOK_SIZE && book_keys[last] == key) {\n");
+    printf("        total_weight += book_weights[last];\n");
     printf("        last++;\n");
     printf("    }\n\n");
-    printf("    if (total_weight <= 0) return match->move;\n\n");
+    printf("    if (total_weight <= 0) return book_moves[first];\n\n");
     printf("    int r = (int)(book_rand() %% (uint32_t)total_weight);\n");
     printf("    int acc = 0;\n");
     printf("    for (int i = first; i < last; ++i) {\n");
-    printf("        acc += book_table[i].weight;\n");
-    printf("        if (r < acc) return book_table[i].move;\n");
+    printf("        acc += book_weights[i];\n");
+    printf("        if (r < acc) return book_moves[i];\n");
     printf("    }\n");
-    printf("    return book_table[first].move;\n");
+    printf("    return book_moves[first];\n");
     printf("}\n");
     return 0;
 }
