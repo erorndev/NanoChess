@@ -347,7 +347,8 @@ static int qsearch(struct Worker *w, int alpha, int beta, int ply) {
     uint64_t key = board_key(b);
     struct TTEntry tte;
     move_t tt_move = 0;
-    if (probe_tt(key, &tte)) {
+    bool tt_hit = probe_tt(key, &tte);
+    if (tt_hit) {
         tt_move = tte.move;
         int tt_score = score_from_tt(tte.score, ply);
         uint8_t flag = tte.flag_age & 3;
@@ -359,12 +360,18 @@ static int qsearch(struct Worker *w, int alpha, int beta, int ply) {
 
     bool in_chk = in_check(b);
     int best_score = -INF;
+    move_t best_move = 0;
     int stand_pat = -INF;
+    int static_eval = -INF;
 
     if (!in_chk) {
-        stand_pat = evaluate(b);
-        if (stand_pat >= beta)
+        static_eval = tt_hit ? tte.eval : evaluate(b);
+        stand_pat = static_eval;
+        if (stand_pat >= beta) {
+            if (!tt_hit)
+                store_tt(key, 0, ply, stand_pat, static_eval, TT_LOWER, 0);
             return stand_pat;
+        }
         if (stand_pat > alpha)
             alpha = stand_pat;
         best_score = stand_pat;
@@ -410,6 +417,7 @@ static int qsearch(struct Worker *w, int alpha, int beta, int ply) {
             best_score = score;
             if (score > alpha) {
                 alpha = score;
+                best_move = m;
                 if (score >= beta)
                     break;
             }
@@ -417,7 +425,10 @@ static int qsearch(struct Worker *w, int alpha, int beta, int ply) {
     }
 
     if (in_chk && legal_moves == 0)
-        return -MATE_VAL + ply;
+        best_score = -MATE_VAL + ply;
+
+    store_tt(key, 0, ply, best_score, static_eval, best_score >= beta ? TT_LOWER : TT_UPPER,
+             best_move);
 
     return best_score;
 }
@@ -560,6 +571,11 @@ static int negamax(struct Worker *w, int depth, int alpha, int beta, int ply, mo
                                       : 0;
         bool can_prune = !root_node && !pv_node && !in_chk && legal_moves >= 1 && !is_tactical &&
                          best_score > -MATE_THRESHOLD;
+
+        // History Pruning
+        if (can_prune && depth <= 3 && hist_score < -4000 * depth)
+            continue;
+
         bool see_ok = !can_prune || depth > 4 || see(b, m, -80 * depth);
 
         if (!do_move(b, m))
