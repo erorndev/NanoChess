@@ -44,6 +44,7 @@ struct SearchContext {
 struct Worker {
     int id;
     int max_depth;
+    int root_depth;
     struct Board board;
     struct SearchContext ctx;
     int16_t history[COLOR_NB][64][64];
@@ -534,7 +535,7 @@ static int negamax(struct Worker *w, int depth, int alpha, int beta, int ply, mo
             continue;
 
         int extension = 0;
-        if (!root_node && !excluded && depth >= 8 && ply < w->max_depth * 2 && m == tt_move &&
+        if (!root_node && !excluded && depth >= 8 && ply < w->root_depth * 2 && m == tt_move &&
             abs(tt_score) < MATE_THRESHOLD && tte.depth >= depth - 3 &&
             (tt_flag == TT_EXACT || tt_flag == TT_LOWER)) {
             int s_beta = tt_score - 2 * depth;
@@ -699,6 +700,7 @@ static int worker_entry(void *arg) {
         int search_d = d;
         if (w->id > 0 && d > 1 && ((d + w->id) & 1) == 0 && d < w->max_depth)
             search_d = d + 1;
+        w->root_depth = search_d;
 
         ctx->seldepth = 0;
         int alpha = -INF;
@@ -807,8 +809,15 @@ struct SearchResult search_position(struct Board *b, const struct SearchLimits *
     struct MoveList root_legal;
     generate_legal(b, &root_legal);
     move_t fallback_move = root_legal.count > 0 ? root_legal.moves[0] : 0;
-    if (root_legal.count <= 1)
+    if (root_legal.count <= 1) {
+        if (limits->uci_output && fallback_move) {
+            char mbuf[6];
+            move_to_str(fallback_move, mbuf);
+            printf("info depth 1 score cp 0 nodes 1 nps 1 pv %s\n", mbuf);
+            fflush(stdout);
+        }
         return (struct SearchResult){fallback_move, 0, 1, 1};
+    }
 
     for (int i = 0; i < option_threads; ++i) {
         workers[i].id = i;
