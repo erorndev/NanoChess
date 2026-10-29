@@ -545,7 +545,7 @@ static int negamax(struct Worker *w, int depth, int alpha, int beta, int ply, mo
             if (ctx->stopped)
                 return 0;
             if (s_score < s_beta) {
-                extension = 1;
+                extension = (!pv_node && s_score < s_beta - 25) ? 2 : 1;
                 ctx->singular_exts++;
             } else if (s_beta >= beta) {
                 return s_beta;
@@ -689,6 +689,8 @@ static int worker_entry(void *arg) {
     struct Worker *w = (struct Worker *)arg;
     struct SearchContext *ctx = &w->ctx;
     int prev_score = 0;
+    move_t last_best_move = 0;
+    int stable_count = 0;
 
     for (int d = 1; d <= w->max_depth; ++d) {
         if (atomic_load_explicit(&search_stopped, memory_order_relaxed))
@@ -729,12 +731,20 @@ static int worker_entry(void *arg) {
         if ((ctx->stopped || atomic_load_explicit(&search_stopped, memory_order_relaxed)) && d > 1)
             break;
 
+        move_t current_best_move = ctx->ss[0].pv_len > 0 ? ctx->ss[0].pv[0] : 0;
+        if (current_best_move == last_best_move)
+            stable_count++;
+        else
+            stable_count = 0;
+        last_best_move = current_best_move;
+
+        int score_drop = prev_score - score;
         prev_score = score;
         w->result.score = score;
         w->result.depth = search_d;
         w->result.nodes = ctx->nodes;
-        if (ctx->ss[0].pv_len > 0)
-            w->result.best_move = ctx->ss[0].pv[0];
+        if (current_best_move)
+            w->result.best_move = current_best_move;
 
         if (w->id == 0 && ctx->uci_output) {
             uint64_t elapsed = get_time_ms() - ctx->start_time;
@@ -762,9 +772,18 @@ static int worker_entry(void *arg) {
             fflush(stdout);
         }
 
-        if (w->id == 0 && ctx->soft_limit > 0 &&
-            (get_time_ms() - ctx->start_time) >= ctx->soft_limit)
-            break;
+        if (w->id == 0 && ctx->soft_limit > 0) {
+            uint64_t elapsed = get_time_ms() - ctx->start_time;
+            uint64_t target_soft = ctx->soft_limit;
+            if (d >= 6 && stable_count >= 3)
+                target_soft = (target_soft * 65) / 100;
+            else if (d >= 6 && score_drop >= 40 && ctx->hard_limit > 0) {
+                uint64_t panic_soft = (target_soft * 150) / 100;
+                target_soft = panic_soft < ctx->hard_limit ? panic_soft : ctx->hard_limit;
+            }
+            if (elapsed >= target_soft)
+                break;
+        }
     }
 
     if (w->id == 0)
@@ -788,6 +807,8 @@ struct SearchResult search_position(struct Board *b, const struct SearchLimits *
     struct MoveList root_legal;
     generate_legal(b, &root_legal);
     move_t fallback_move = root_legal.count > 0 ? root_legal.moves[0] : 0;
+    if (root_legal.count <= 1)
+        return (struct SearchResult){fallback_move, 0, 1, 1};
 
     for (int i = 0; i < option_threads; ++i) {
         workers[i].id = i;

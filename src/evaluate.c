@@ -432,12 +432,19 @@ static int32_t eval_side(const struct Board *b, enum Color us) {
     score += psqt[make_piece(us, KING)][our_ksq];
 
     int kf = our_ksq & 7;
+    int kr = our_ksq >> 3;
     if (kf <= FILE_C || kf >= FILE_F) {
         bitboard_t shield = king_attacks[our_ksq] & our_pawns;
         score += popcount64(shield) * king_shield_bonus;
     }
     if (!(file_mask[kf] & our_pawns))
         score -= king_open_penalty;
+
+    if (their_majors || popcount64(their_minors) >= 2) {
+        int adv_rank = us == WHITE ? kr : (7 - kr);
+        if (adv_rank >= RANK_3)
+            score -= S(25 * (adv_rank - RANK_2), 20 * (adv_rank - RANK_2));
+    }
 
     if (atk_count >= 2) {
         int danger = atk_units * atk_units;

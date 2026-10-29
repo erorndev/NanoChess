@@ -150,7 +150,7 @@ static void parse_go(struct Board *b, char *line) {
         uint64_t inc = (b->side == WHITE) ? winc : binc;
 
         if (time_left > 0) {
-            int moves = (movestogo > 0 && movestogo < 40) ? movestogo : 30;
+            int moves = (movestogo > 0 && movestogo < 50) ? movestogo : 45;
             uint64_t allocated = time_left / moves + inc * 3 / 4;
             if (allocated > time_left)
                 allocated = time_left * 8 / 10;
