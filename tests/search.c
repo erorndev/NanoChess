@@ -216,6 +216,11 @@ static void test_time_manager(void) {
     CHECK(lim_1ms.hard_time <= 1);
     CHECK(lim_1ms.soft_time <= lim_1ms.hard_time);
 
+    option_move_overhead = 100;
+    struct SearchLimits lim_overhead = allocate_time(&b, 60000, 1000, 0);
+    CHECK(lim_overhead.hard_time <= 60000 - 100);
+    option_move_overhead = 15;
+
     set_fen(&b, "8/8/8/8/8/q7/8/Kr6 w - - 0 1");
     clear_tt();
     clear_search();
@@ -234,6 +239,52 @@ static void test_time_manager(void) {
     CHECK(dt < 15);
 }
 
+struct StopTestArgs {
+    struct Board board;
+    struct SearchResult result;
+};
+
+static int stop_test_worker(void *arg) {
+    struct StopTestArgs *a = (struct StopTestArgs *)arg;
+    struct SearchLimits lim = {
+        .depth = 0,
+        .soft_time = 0,
+        .hard_time = 0,
+        .max_nodes = 0,
+        .uci_output = false,
+    };
+    a->result = search_position(&a->board, &lim);
+    return 0;
+}
+
+static void test_stop_request(void) {
+    clear_tt();
+    clear_search();
+
+    struct StopTestArgs args;
+    set_fen(&args.board, START_FEN);
+    args.result = (struct SearchResult){0, 0, 0, 0};
+
+    search_clear_stop_request();
+    thread_t t;
+    uint64_t t0 = get_time_ms();
+    CHECK(thread_create(&t, stop_test_worker, &args));
+    sleep_ms(50);
+    search_request_stop();
+    thread_join(t);
+    uint64_t dt = get_time_ms() - t0;
+
+    CHECK(args.result.best_move != 0);
+    CHECK(args.result.depth >= 1);
+    CHECK(dt < 1000);
+
+    search_request_stop();
+    args.result = (struct SearchResult){0, 0, 0, 0};
+    stop_test_worker(&args);
+    CHECK(args.result.best_move != 0);
+    search_clear_stop_request();
+}
+
 int main(void) {
     init_zobrist();
     init_attacks();
@@ -242,6 +293,7 @@ int main(void) {
     init_search();
 
     test_time_manager();
+    test_stop_request();
     test_see();
     test_continuation_history();
     test_qsearch_check_and_see();

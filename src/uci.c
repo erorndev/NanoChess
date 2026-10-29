@@ -16,6 +16,47 @@
 #define ENGINE_NAME "NanoChess"
 #define ENGINE_AUTHOR "Erorn"
 
+int option_move_overhead = 15;
+
+static thread_t search_thread;
+static bool search_running = false;
+static struct Board search_board;
+static struct SearchLimits search_limits;
+
+static int search_thread_entry(void *arg) {
+    (void)arg;
+    struct SearchResult res = search_position(&search_board, &search_limits);
+    char mbuf[6];
+    move_to_str(res.best_move, mbuf);
+    printf("bestmove %s\n", mbuf);
+    fflush(stdout);
+    return 0;
+}
+
+static void wait_for_search(void) {
+    if (search_running) {
+        thread_join(search_thread);
+        search_running = false;
+    }
+}
+
+static void stop_search(void) {
+    if (search_running) {
+        search_request_stop();
+        wait_for_search();
+    }
+}
+
+static void start_search(const struct Board *b, const struct SearchLimits *lim) {
+    stop_search();
+    search_board = *b;
+    search_limits = *lim;
+    search_clear_stop_request();
+    search_running = thread_create(&search_thread, search_thread_entry, NULL);
+    if (!search_running)
+        search_thread_entry(NULL);
+}
+
 static void run_bench(void) {
     const char *bench_fens[] = {
         START_FEN,
@@ -92,7 +133,7 @@ struct SearchLimits allocate_time(const struct Board *b, uint64_t time_left, uin
     if (time_left == 0)
         return lim;
 
-    const uint64_t overhead = 15;
+    const uint64_t overhead = (uint64_t)option_move_overhead;
     uint64_t usable = (time_left > overhead) ? (time_left - overhead) : (time_left * 3 / 4);
     if (usable < 1)
         usable = 1;
@@ -199,11 +240,7 @@ static void parse_go(struct Board *b, char *line) {
         lim.hard_time = tlim.hard_time;
     }
 
-    struct SearchResult res = search_position(b, &lim);
-    char mbuf[6];
-    move_to_str(res.best_move, mbuf);
-    printf("bestmove %s\n", mbuf);
-    fflush(stdout);
+    start_search(b, &lim);
 }
 
 void uci_loop(int argc, char **argv) {
@@ -230,20 +267,26 @@ void uci_loop(int argc, char **argv) {
             printf("option name Hash type spin default 32 min 1 max 1024\n");
             printf("option name Threads type spin default 1 min 1 max %d\n", MAX_THREADS);
             printf("option name OwnBook type check default true\n");
+            printf("option name Move Overhead type spin default 15 min 0 max 5000\n");
             printf("uciok\n");
             fflush(stdout);
         } else if (strcmp(line, "isready") == 0) {
             printf("readyok\n");
             fflush(stdout);
+        } else if (strcmp(line, "stop") == 0) {
+            stop_search();
         } else if (strcmp(line, "ucinewgame") == 0) {
+            stop_search();
             clear_tt();
             clear_search();
             set_fen(&b, START_FEN);
         } else if (strncmp(line, "position", 8) == 0) {
+            stop_search();
             parse_position(&b, line);
         } else if (strncmp(line, "go", 2) == 0) {
             parse_go(&b, line);
         } else if (strncmp(line, "setoption", 9) == 0) {
+            stop_search();
             char *name = strstr(line, "name Hash");
             char *val = strstr(line, "value ");
             if (name && val) {
@@ -262,10 +305,22 @@ void uci_loop(int argc, char **argv) {
                 else if (strstr(val, "false"))
                     option_own_book = false;
             }
+            char *overhead_name = strstr(line, "name Move Overhead");
+            if (overhead_name && val) {
+                int ms = atoi(val + 6);
+                if (ms < 0)
+                    ms = 0;
+                if (ms > 5000)
+                    ms = 5000;
+                option_move_overhead = ms;
+            }
         } else if (strcmp(line, "bench") == 0) {
+            stop_search();
             run_bench();
         } else if (strcmp(line, "quit") == 0) {
+            stop_search();
             break;
         }
     }
+    stop_search();
 }

@@ -17,6 +17,7 @@ static const int see_val[7] = { 100, 320, 330, 500, 950, 20000, 0 };
 
 int option_threads = 1;
 static atomic_bool search_stopped = false;
+static atomic_bool stop_requested = false;
 static int lmr_table[MAX_SEARCH_DEPTH][256];
 
 struct SearchStack {
@@ -76,6 +77,15 @@ void init_search(void) {
         set_threads(option_threads);
     else
         clear_search();
+}
+
+void search_request_stop(void) {
+    atomic_store_explicit(&stop_requested, true, memory_order_relaxed);
+    atomic_store_explicit(&search_stopped, true, memory_order_relaxed);
+}
+
+void search_clear_stop_request(void) {
+    atomic_store_explicit(&stop_requested, false, memory_order_relaxed);
 }
 
 void clear_search(void) {
@@ -301,8 +311,11 @@ static inline bool check_stop(struct Worker *w) {
     struct SearchContext *ctx = &w->ctx;
     if (ctx->stopped)
         return true;
+    if (w->root_depth <= 1)
+        return false;
     if ((ctx->nodes & 1023) == 0) {
-        if (atomic_load_explicit(&search_stopped, memory_order_relaxed)) {
+        if (atomic_load_explicit(&search_stopped, memory_order_relaxed) ||
+            atomic_load_explicit(&stop_requested, memory_order_relaxed)) {
             ctx->stopped = true;
             return true;
         }
@@ -705,7 +718,7 @@ static int worker_entry(void *arg) {
     int stable_count = 0;
 
     for (int d = 1; d <= w->max_depth; ++d) {
-        if (atomic_load_explicit(&search_stopped, memory_order_relaxed))
+        if (d > 1 && atomic_load_explicit(&search_stopped, memory_order_relaxed))
             break;
 
         int search_d = d;
@@ -816,6 +829,8 @@ struct SearchResult search_position(struct Board *b, const struct SearchLimits *
 
     step_tt_age();
     atomic_store_explicit(&search_stopped, false, memory_order_relaxed);
+    if (atomic_load_explicit(&stop_requested, memory_order_relaxed))
+        atomic_store_explicit(&search_stopped, true, memory_order_relaxed);
 
     struct MoveList root_legal;
     generate_legal(b, &root_legal);

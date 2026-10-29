@@ -30,6 +30,9 @@ void init_search(void);
 void clear_search(void);
 void set_threads(int count);
 
+void search_request_stop(void);
+void search_clear_stop_request(void);
+
 [[nodiscard]] bool see(const struct Board *b, move_t m, int threshold);
 [[nodiscard]] int conthist_entry(enum Piece prev_pc, enum Square prev_to, enum Piece pc,
                                  enum Square to);

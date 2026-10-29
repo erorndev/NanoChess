@@ -166,6 +166,15 @@ static inline void thread_join(thread_t t) {
 #endif
 }
 
+static inline void sleep_ms(unsigned ms) {
+#if defined(_WIN32)
+    Sleep(ms);
+#else
+    struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000L};
+    nanosleep(&ts, NULL);
+#endif
+}
+
 [[nodiscard]] static inline bool input_available(void) {
 #if defined(_WIN32)
     static HANDLE h_stdin = NULL;
