@@ -7,6 +7,7 @@
 #include "platform.h"
 #include "tt.h"
 #include "types.h"
+#include "uci.h"
 #include "zobrist.h"
 
 #include <stdio.h>
@@ -187,6 +188,52 @@ static void assert_best_move(const char *fen, int depth, const char *expected_uc
     }
 }
 
+static void test_time_manager(void) {
+    struct Board b;
+    set_fen(&b, START_FEN);
+
+    struct SearchLimits lim_op = allocate_time(&b, 60000, 1000, 0);
+    CHECK(lim_op.soft_time > 1500 && lim_op.soft_time < 3000);
+    CHECK(lim_op.hard_time >= lim_op.soft_time);
+    CHECK(lim_op.hard_time <= 60000 - 15);
+
+    set_fen(&b, "8/4k3/8/8/3P4/8/4K3/8 w - - 0 1");
+    struct SearchLimits lim_eg = allocate_time(&b, 60000, 1000, 0);
+    CHECK(lim_eg.soft_time > lim_op.soft_time * 15 / 10);
+    CHECK(lim_eg.hard_time >= lim_eg.soft_time);
+    CHECK(lim_eg.hard_time <= 60000 - 15);
+
+    set_fen(&b, START_FEN);
+    struct SearchLimits lim_blitz = allocate_time(&b, 10000, 100, 0);
+    CHECK(lim_blitz.soft_time >= 350 && lim_blitz.soft_time <= 500);
+    CHECK(lim_blitz.hard_time >= lim_blitz.soft_time);
+
+    struct SearchLimits lim_low = allocate_time(&b, 10, 0, 0);
+    CHECK(lim_low.hard_time <= 10);
+    CHECK(lim_low.soft_time <= lim_low.hard_time);
+
+    struct SearchLimits lim_1ms = allocate_time(&b, 1, 0, 0);
+    CHECK(lim_1ms.hard_time <= 1);
+    CHECK(lim_1ms.soft_time <= lim_1ms.hard_time);
+
+    set_fen(&b, "8/8/8/8/8/q7/8/Kr6 w - - 0 1");
+    clear_tt();
+    clear_search();
+    struct SearchLimits lim_forced = {
+        .depth = 0,
+        .soft_time = 5000,
+        .hard_time = 5000,
+        .max_nodes = 0,
+        .uci_output = false,
+    };
+    uint64_t t0 = get_time_ms();
+    struct SearchResult res_forced = search_position(&b, &lim_forced);
+    uint64_t dt = get_time_ms() - t0;
+    CHECK(res_forced.best_move == parse_move(&b, "a1b1"));
+    CHECK(res_forced.nodes == 1);
+    CHECK(dt < 15);
+}
+
 int main(void) {
     init_zobrist();
     init_attacks();
@@ -194,6 +241,7 @@ int main(void) {
     init_tt(16);
     init_search();
 
+    test_time_manager();
     test_see();
     test_continuation_history();
     test_qsearch_check_and_see();
