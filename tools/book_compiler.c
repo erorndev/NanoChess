@@ -9,7 +9,7 @@
 #include <string.h>
 #include <stdbool.h>
 
-#include "../src/book.c"
+#include "raw_book.h"
 
 #define MAX_ENTRIES 8192
 

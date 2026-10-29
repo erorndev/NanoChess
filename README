@@ -14,7 +14,7 @@ or any neural functions, the evaluation is pretty quick.
 The search function is an Alpha-Beta Negamax engine with Principal
 Variation Search. It uses many modern tournament features such as Aspiration
 windows, 1 ply & 2 ply continuation history, Singular Extensions, Multi-Cut
-pruning, Adaptive Late Move Reductions and Verified Null-Move Pruning. Check
+pruning, Adaptive Late Move Reductions and Null-Move Pruning. Check
 evasion and Static Exchange pruning is used in the quiescence search.
 
 Multi-threading is supported using a Lockless Lazy SMP engine. It can run
@@ -23,5 +23,5 @@ using between 1 and 64 threads.
 The engine is easy to use with any UCI interface such as En Croissant,
 Arena, Cutechess and Banksia. The Hash size is configurable between 1 and
 1024MB (Default 32MB). The number of Threads can be set. OwnBook can be
-toggled. To compile the engine just run build.bat on Windows or cmake on
-Linux/macOS.
+toggled and Move Overhead adjusted. To compile the engine just run build.bat
+on Windows or cmake on Linux/macOS.

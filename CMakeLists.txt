@@ -18,7 +18,8 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-std=c2x -O3 -flto)
 elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
     if(MSVC)
-        add_compile_options(-Xclang -std=c23 /O2 /Oi /Ot)
+        add_compile_options(-Xclang -std=c23 /O1 /Os /Gy /Gw -flto /clang:-fno-unwind-tables /clang:-fno-asynchronous-unwind-tables)
+        add_link_options(/OPT:REF /OPT:ICF)
     else()
         add_compile_options(-std=c23 -O3 -flto)
     endif()
@@ -68,8 +69,27 @@ add_executable(kaufman
     ${ENGINE_SOURCES}
 )
 
+add_executable(book_compiler
+    tools/book_compiler.c
+    src/zobrist.c
+    src/attacks.c
+    src/board.c
+    src/movegen.c
+)
+
+add_executable(openings
+    tools/openings.c
+    src/zobrist.c
+    src/attacks.c
+    src/board.c
+    src/movegen.c
+    src/book.c
+)
+
 if(NOT MSVC)
     target_link_libraries(nanochess PRIVATE m)
+    target_link_libraries(book_compiler PRIVATE m)
+    target_link_libraries(openings PRIVATE m)
     target_link_libraries(board PRIVATE m)
     target_link_libraries(perft PRIVATE m)
     target_link_libraries(eval PRIVATE m)
