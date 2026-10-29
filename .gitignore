@@ -17,3 +17,6 @@ compile_commands.json
 .vscode/
 .vs/
 .idea/
+
+# fastchess auto-saved tournament state
+config.json
