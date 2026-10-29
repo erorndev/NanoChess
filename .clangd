@@ -1,0 +1,6 @@
+CompileFlags:
+  CompilationDatabase: build
+  Add:
+    - -std=c23
+    - -Wall
+    - -Wextra

@@ -1,0 +1,19 @@
+# Build artifacts & CMake
+build/
+bin/
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.log
+
+# Tooling outputs & cache
+compile_commands.json
+.cache/
+.ninja_deps
+.ninja_log
+
+# IDE & Editor files
+.vscode/
+.vs/
+.idea/
