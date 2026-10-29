@@ -571,11 +571,6 @@ static int negamax(struct Worker *w, int depth, int alpha, int beta, int ply, mo
                                       : 0;
         bool can_prune = !root_node && !pv_node && !in_chk && legal_moves >= 1 && !is_tactical &&
                          best_score > -MATE_THRESHOLD;
-
-        // History Pruning
-        if (can_prune && depth <= 3 && hist_score < -4000 * depth)
-            continue;
-
         bool see_ok = !can_prune || depth > 4 || see(b, m, -80 * depth);
 
         if (!do_move(b, m))
