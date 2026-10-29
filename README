@@ -1,6 +1,6 @@
 NanoChess
 ====================
-A small C23 chess engine with an elo rating of around 2880. With a
+A small C23 chess engine with an elo rating of around 2640. With a
 compiled size of just under 81KB, there is no bloat or external
 dependencies and it easily fits onto a floppy disk. It can be compiled on
 almost any architecture such as amd64, arm64, PowerPC and i386.
