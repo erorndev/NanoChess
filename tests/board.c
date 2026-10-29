@@ -1,4 +1,7 @@
+#include "attacks.h"
 #include "board.h"
+#include "book.h"
+#include "movegen.h"
 #include "platform.h"
 #include "types.h"
 #include "zobrist.h"
@@ -106,13 +109,45 @@ static void test_zobrist_keys(void) {
     assert(board_key(&b1) != board_key(&b2));
 }
 
+static void test_opening_book(void) {
+    init_book();
+    struct Board b;
+
+    set_fen(&b, START_FEN);
+    move_t m1 = probe_book(&b);
+    assert(m1 != 0);
+    char mbuf[6];
+    move_to_str(m1, mbuf);
+    assert(strcmp(mbuf, "e2e4") == 0 || strcmp(mbuf, "d2d4") == 0 ||
+           strcmp(mbuf, "c2c4") == 0 || strcmp(mbuf, "g1f3") == 0);
+
+    (void)do_move(&b, parse_move(&b, "e2e4"));
+    move_t m2 = probe_book(&b);
+    assert(m2 != 0);
+
+    (void)do_move(&b, parse_move(&b, "c7c5"));
+    (void)do_move(&b, parse_move(&b, "g1f3"));
+    move_t m3 = probe_book(&b);
+    assert(m3 != 0);
+
+    set_fen(&b, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+    assert(probe_book(&b) == 0);
+
+    option_own_book = false;
+    set_fen(&b, START_FEN);
+    assert(probe_book(&b) == 0);
+    option_own_book = true;
+}
+
 int main(void) {
     init_zobrist();
+    init_attacks();
     test_types();
     test_platform_intrinsics();
     test_fen_parsing();
     test_zobrist_keys();
     test_threads();
+    test_opening_book();
     printf("board: all passed\n");
     return 0;
 }
