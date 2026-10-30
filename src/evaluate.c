@@ -186,9 +186,26 @@ static const int32_t bishop_pair_bonus     = S(32, 54);
 static const int32_t rook_open_bonus       = S(26, 14);
 static const int32_t rook_semi_bonus       = S(13, 7);
 static const int32_t rook_seventh_bonus    = S(21, 30);
-static const int32_t pawn_threat_minor     = S(32, 24);
-static const int32_t pawn_threat_major     = S(44, 32);
-static const int32_t minor_threat_major    = S(28, 18);
+static const int32_t threat_pawn_minor     = S(32, 24);
+static const int32_t threat_pawn_rook      = S(42, 32);
+static const int32_t threat_pawn_queen     = S(56, 44);
+static const int32_t threat_pawn_push      = S(16, 12);
+static const int32_t threat_minor_minor    = S(18, 12);
+static const int32_t threat_minor_rook     = S(36, 26);
+static const int32_t threat_minor_queen    = S(54, 38);
+static const int32_t threat_rook_minor     = S(22, 16);
+static const int32_t threat_rook_queen     = S(44, 30);
+static const int32_t threat_king_piece     = S(0, 20);
+
+static const int32_t hanging_pawn          = S(12, 10);
+static const int32_t hanging_minor         = S(34, 26);
+static const int32_t hanging_rook          = S(46, 32);
+static const int32_t hanging_queen         = S(58, 40);
+static const int32_t underdefended_piece   = S(16, 12);
+
+static const int32_t trapped_knight_rim    = S(45, 35);
+static const int32_t trapped_bishop_rim    = S(55, 45);
+static const int32_t trapped_rook_king     = S(38, 14);
 static const int32_t king_shield_bonus     = S(9, 0);
 static const int32_t king_open_penalty     = S(17, 0);
 static const int32_t tempo_bonus           = S(18, 9);
@@ -253,7 +270,17 @@ static inline int sq_dist(int s1, int s2) {
     return df > dr ? df : dr;
 }
 
-static int32_t eval_side(const struct Board *b, enum Color us) {
+struct SideAttacks {
+    bitboard_t pawn;
+    bitboard_t minor;
+    bitboard_t rook;
+    bitboard_t queen;
+    bitboard_t king;
+    bitboard_t all;
+    bitboard_t twice;
+};
+
+static int32_t eval_side(const struct Board *b, enum Color us, struct SideAttacks *atks) {
     enum Color them = (enum Color)(us ^ 1);
     int32_t score = 0;
 
@@ -262,19 +289,28 @@ static int32_t eval_side(const struct Board *b, enum Color us) {
     int our_ksq = lsb64(b->pieces[make_piece(us, KING)]);
     int their_ksq = lsb64(b->pieces[make_piece(them, KING)]);
 
+    bitboard_t our_pawn_left, our_pawn_right;
     bitboard_t their_pawn_atks;
-    bitboard_t our_pawn_atks;
     if (us == WHITE) {
-        our_pawn_atks = ((our_pawns & ~0x0101010101010101ULL) << 7) |
-                        ((our_pawns & ~0x8080808080808080ULL) << 9);
+        our_pawn_left = (our_pawns & ~0x0101010101010101ULL) << 7;
+        our_pawn_right = (our_pawns & ~0x8080808080808080ULL) << 9;
         their_pawn_atks = ((their_pawns & ~0x0101010101010101ULL) >> 9) |
                           ((their_pawns & ~0x8080808080808080ULL) >> 7);
     } else {
-        our_pawn_atks = ((our_pawns & ~0x0101010101010101ULL) >> 9) |
-                        ((our_pawns & ~0x8080808080808080ULL) >> 7);
+        our_pawn_left = (our_pawns & ~0x0101010101010101ULL) >> 9;
+        our_pawn_right = (our_pawns & ~0x8080808080808080ULL) >> 7;
         their_pawn_atks = ((their_pawns & ~0x0101010101010101ULL) << 7) |
                           ((their_pawns & ~0x8080808080808080ULL) << 9);
     }
+    bitboard_t our_pawn_atks = our_pawn_left | our_pawn_right;
+
+    atks->pawn = our_pawn_atks;
+    atks->minor = 0;
+    atks->rook = 0;
+    atks->queen = 0;
+    atks->king = king_attacks[our_ksq];
+    atks->twice = our_pawn_left & our_pawn_right;
+    atks->all = our_pawn_atks;
 
     bitboard_t mob_area = ~(our_pawns | b->pieces[make_piece(us, KING)] | their_pawn_atks);
     bitboard_t enemy_king_zone = king_zone_mask[them][their_ksq];
@@ -282,7 +318,7 @@ static int32_t eval_side(const struct Board *b, enum Color us) {
         b->pieces[make_piece(them, KNIGHT)] | b->pieces[make_piece(them, BISHOP)];
     bitboard_t their_majors =
         b->pieces[make_piece(them, ROOK)] | b->pieces[make_piece(them, QUEEN)];
-    bitboard_t our_minor_atks = 0;
+    bitboard_t rim_files = file_mask[0] | file_mask[7];
     int atk_units = 0;
     int atk_count = 0;
 
@@ -296,9 +332,6 @@ static int32_t eval_side(const struct Board *b, enum Color us) {
 
     bitboard_t doubled = our_pawns & (us == WHITE ? (our_pawns << 8) : (our_pawns >> 8));
     score -= popcount64(doubled) * pawn_doubled_penalty;
-
-    score += popcount64(our_pawn_atks & their_minors) * pawn_threat_minor;
-    score += popcount64(our_pawn_atks & their_majors) * pawn_threat_major;
 
     bitboard_t pbb = our_pawns;
     while (pbb) {
@@ -339,8 +372,14 @@ static int32_t eval_side(const struct Board *b, enum Color us) {
         score += psqt[make_piece(us, KNIGHT)][sq];
 
         bitboard_t atk = knight_attacks[sq];
-        our_minor_atks |= atk;
-        score += knight_mob[popcount64(atk & mob_area)];
+        atks->minor |= atk;
+        atks->twice |= (atks->all & atk);
+        atks->all |= atk;
+
+        int mob = popcount64(atk & mob_area);
+        score += knight_mob[mob];
+        if (!mob && ((1ULL << sq) & rim_files))
+            score -= trapped_knight_rim;
 
         if (((1ULL << sq) & outpost_ranks & our_pawn_atks) &&
             !(outpost_mask[us][sq] & their_pawns)) {
@@ -364,8 +403,14 @@ static int32_t eval_side(const struct Board *b, enum Color us) {
         score += psqt[make_piece(us, BISHOP)][sq];
 
         bitboard_t atk = bishop_attacks((enum Square)sq, b->all);
-        our_minor_atks |= atk;
-        score += bishop_mob[popcount64(atk & mob_area)];
+        atks->minor |= atk;
+        atks->twice |= (atks->all & atk);
+        atks->all |= atk;
+
+        int mob = popcount64(atk & mob_area);
+        score += bishop_mob[mob];
+        if (!mob && ((1ULL << sq) & rim_files))
+            score -= trapped_bishop_rim;
 
         if (((1ULL << sq) & outpost_ranks & our_pawn_atks) &&
             !(outpost_mask[us][sq] & their_pawns)) {
@@ -379,8 +424,6 @@ static int32_t eval_side(const struct Board *b, enum Color us) {
         bbb &= bbb - 1;
     }
 
-    score += popcount64(our_minor_atks & their_majors) * minor_threat_major;
-
     // Rooks
     bitboard_t rbb = b->pieces[make_piece(us, ROOK)];
     int seventh_rank = (us == WHITE) ? RANK_7 : RANK_2;
@@ -390,7 +433,21 @@ static int32_t eval_side(const struct Board *b, enum Color us) {
         score += psqt[make_piece(us, ROOK)][sq];
 
         bitboard_t atk = rook_attacks((enum Square)sq, b->all);
-        score += rook_mob[popcount64(atk & mob_area)];
+        atks->rook |= atk;
+        atks->twice |= (atks->all & atk);
+        atks->all |= atk;
+
+        int mob = popcount64(atk & mob_area);
+        score += rook_mob[mob];
+
+        int back_rank = (us == WHITE) ? RANK_1 : RANK_8;
+        if (mob <= 3 && (sq >> 3) == back_rank && (our_ksq >> 3) == back_rank &&
+            !(b->history[b->ply].castling & (us == WHITE ? CASTLE_WHITE : CASTLE_BLACK))) {
+            int kf = our_ksq & 7;
+            int rf = sq & 7;
+            if ((kf <= FILE_D && rf < kf) || (kf >= FILE_E && rf > kf))
+                score -= trapped_rook_king;
+        }
 
         int f = sq & 7;
         if (!(file_mask[f] & our_pawns)) {
@@ -419,6 +476,10 @@ static int32_t eval_side(const struct Board *b, enum Color us) {
         score += psqt[make_piece(us, QUEEN)][sq];
 
         bitboard_t atk = queen_attacks((enum Square)sq, b->all);
+        atks->queen |= atk;
+        atks->twice |= (atks->all & atk);
+        atks->all |= atk;
+
         score += queen_mob[popcount64(atk & mob_area)];
 
         if (atk & enemy_king_zone) {
@@ -451,12 +512,146 @@ static int32_t eval_side(const struct Board *b, enum Color us) {
         score += S(danger, 0);
     }
 
+    atks->twice |= (atks->all & atks->king);
+    atks->all |= atks->king;
+
     return score;
+}
+
+static int32_t eval_threats(const struct Board *b, enum Color us, const struct SideAttacks *us_atks,
+                            const struct SideAttacks *them_atks) {
+    enum Color them = (enum Color)(us ^ 1);
+    int32_t score = 0;
+
+    bitboard_t their_pawns = b->pieces[make_piece(them, PAWN)];
+    bitboard_t their_knights = b->pieces[make_piece(them, KNIGHT)];
+    bitboard_t their_bishops = b->pieces[make_piece(them, BISHOP)];
+    bitboard_t their_rooks = b->pieces[make_piece(them, ROOK)];
+    bitboard_t their_queens = b->pieces[make_piece(them, QUEEN)];
+    bitboard_t their_minors = their_knights | their_bishops;
+    bitboard_t their_non_pawns = b->occ[them] & ~their_pawns & ~b->pieces[make_piece(them, KING)];
+
+    score += popcount64(us_atks->pawn & their_minors) * threat_pawn_minor;
+    score += popcount64(us_atks->pawn & their_rooks) * threat_pawn_rook;
+    score += popcount64(us_atks->pawn & their_queens) * threat_pawn_queen;
+
+    score += popcount64(us_atks->minor & their_rooks) * threat_minor_rook;
+    score += popcount64(us_atks->minor & their_queens) * threat_minor_queen;
+    score += popcount64(us_atks->minor & their_minors & ~them_atks->pawn) * threat_minor_minor;
+
+    score += popcount64(us_atks->rook & their_queens) * threat_rook_queen;
+    score += popcount64(us_atks->rook & their_minors & ~them_atks->pawn) * threat_rook_minor;
+
+    bitboard_t hanging = b->occ[them] & us_atks->all & ~them_atks->all;
+    score += popcount64(hanging & their_pawns) * hanging_pawn;
+    score += popcount64(hanging & their_minors) * hanging_minor;
+    score += popcount64(hanging & their_rooks) * hanging_rook;
+    score += popcount64(hanging & their_queens) * hanging_queen;
+
+    bitboard_t underdefended =
+        their_non_pawns & us_atks->twice & ~them_atks->twice & ~them_atks->pawn;
+    score += popcount64(underdefended) * underdefended_piece;
+
+    if (!b->pieces[make_piece(them, QUEEN)]) {
+        bitboard_t king_threats = us_atks->king & (their_pawns | their_minors) & ~them_atks->all;
+        score += popcount64(king_threats) * threat_king_piece;
+    }
+
+    bitboard_t our_pawns = b->pieces[make_piece(us, PAWN)];
+    bitboard_t push =
+        (us == WHITE) ? ((our_pawns << 8) & ~b->all) : ((our_pawns >> 8) & ~b->all);
+    bitboard_t safe_push =
+        push & ~them_atks->pawn & (~them_atks->all | us_atks->all) & ~0xFF000000000000FFULL;
+    bitboard_t push_atks;
+    if (us == WHITE)
+        push_atks = ((safe_push & ~0x0101010101010101ULL) << 7) |
+                    ((safe_push & ~0x8080808080808080ULL) << 9);
+    else
+        push_atks = ((safe_push & ~0x0101010101010101ULL) >> 9) |
+                    ((safe_push & ~0x8080808080808080ULL) >> 7);
+    score += popcount64(push_atks & (their_minors | their_rooks | their_queens)) * threat_pawn_push;
+
+    return score;
+}
+
+static inline int scale_factor(const struct Board *b, int eg) {
+    if (!eg)
+        return 64;
+
+    enum Color strong = eg > 0 ? b->side : (enum Color)(b->side ^ 1);
+    enum Color weak = (enum Color)(strong ^ 1);
+
+    int s_knights = popcount64(b->pieces[make_piece(strong, KNIGHT)]);
+    int s_bishops = popcount64(b->pieces[make_piece(strong, BISHOP)]);
+    int s_rooks = popcount64(b->pieces[make_piece(strong, ROOK)]);
+    int s_queens = popcount64(b->pieces[make_piece(strong, QUEEN)]);
+    int s_pawns = popcount64(b->pieces[make_piece(strong, PAWN)]);
+
+    int w_knights = popcount64(b->pieces[make_piece(weak, KNIGHT)]);
+    int w_bishops = popcount64(b->pieces[make_piece(weak, BISHOP)]);
+    int w_rooks = popcount64(b->pieces[make_piece(weak, ROOK)]);
+    int w_queens = popcount64(b->pieces[make_piece(weak, QUEEN)]);
+    int w_pawns = popcount64(b->pieces[make_piece(weak, PAWN)]);
+
+    int npm_s = s_knights * 336 + s_bishops * 363 + s_rooks * 477 + s_queens * 1025;
+    int npm_w = w_knights * 336 + w_bishops * 363 + w_rooks * 477 + w_queens * 1025;
+
+    int sf = 64;
+    bitboard_t light_sq = 0x55AA55AA55AA55AAULL;
+
+    if (!s_pawns && npm_s - npm_w <= 363)
+        sf = npm_s < 477 ? 0 : (npm_w <= 363 ? 4 : 14);
+
+    if (s_bishops == 1 && npm_s == 363 && !npm_w && s_pawns) {
+        bitboard_t sp = b->pieces[make_piece(strong, PAWN)];
+        if (!(sp & ~file_mask[0]) || !(sp & ~file_mask[7])) {
+            int f = (sp & file_mask[0]) ? 0 : 7;
+            int qsq = strong == WHITE ? (56 + f) : f;
+            int bsq = lsb64(b->pieces[make_piece(strong, BISHOP)]);
+            int wksq = lsb64(b->pieces[make_piece(weak, KING)]);
+            if (((light_sq >> bsq) & 1) != ((light_sq >> qsq) & 1) && sq_dist(wksq, qsq) <= 1)
+                sf = 0;
+        }
+    }
+
+    if (s_bishops == 1 && w_bishops == 1) {
+        int s_bsq = lsb64(b->pieces[make_piece(strong, BISHOP)]);
+        int w_bsq = lsb64(b->pieces[make_piece(weak, BISHOP)]);
+        if (((light_sq >> s_bsq) & 1) != ((light_sq >> w_bsq) & 1)) {
+            if (npm_s == 363 && npm_w == 363) {
+                if (sf > 22)
+                    sf = 22;
+            } else {
+                int s = 36 + 2 * s_pawns;
+                if (s > 64)
+                    s = 64;
+                if (sf > s)
+                    sf = s;
+            }
+        }
+    }
+
+    if (npm_s > 0 && s_knights == w_knights && s_bishops == w_bishops && s_rooks == w_rooks &&
+        s_queens == w_queens && s_pawns - w_pawns == 1) {
+        int s = 36 + 7 * s_pawns;
+        if (s > 64)
+            s = 64;
+        if (sf > s)
+            sf = s;
+    }
+
+    if (sf < 64 && b->history[b->ply].halfmove > 12) {
+        int diff = (b->history[b->ply].halfmove - 12) / 4;
+        sf = sf > diff ? sf - diff : 0;
+    }
+
+    return sf;
 }
 
 int evaluate(const struct Board *b) {
     bitboard_t pawns = b->pieces[W_PAWN] | b->pieces[B_PAWN];
     bitboard_t non_pawns = b->all & ~(pawns | b->pieces[W_KING] | b->pieces[B_KING]);
+
     if (!non_pawns && !pawns)
         return 0;
 
@@ -477,21 +672,21 @@ int evaluate(const struct Board *b) {
             return 0;
     }
 
-    int32_t score = eval_side(b, b->side) - eval_side(b, (enum Color)(b->side ^ 1));
+    struct SideAttacks atks_w, atks_b;
+    int32_t w_score = eval_side(b, WHITE, &atks_w);
+    int32_t b_score = eval_side(b, BLACK, &atks_b);
+    int32_t w_threats = eval_threats(b, WHITE, &atks_w, &atks_b);
+    int32_t b_threats = eval_threats(b, BLACK, &atks_b, &atks_w);
+
+    int32_t score = (b->side == WHITE) ? ((w_score + w_threats) - (b_score + b_threats))
+                                       : ((b_score + b_threats) - (w_score + w_threats));
     score += tempo_bonus;
 
     int mg = mg_val(score);
     int eg = eg_val(score);
 
-    // Opposite-colored bishops endgame scaling
-    if (phase == 2 && popcount64(b->pieces[W_BISHOP]) == 1 &&
-        popcount64(b->pieces[B_BISHOP]) == 1) {
-        bitboard_t light_sq = 0x55AA55AA55AA55AAULL;
-        bool w_light = (b->pieces[W_BISHOP] & light_sq) != 0;
-        bool b_light = (b->pieces[B_BISHOP] & light_sq) != 0;
-        if (w_light != b_light)
-            eg = (eg * 3) / 4;
-    }
+    if (phase < 24)
+        eg = (eg * scale_factor(b, eg)) / 64;
 
     return (mg * phase + eg * (24 - phase)) / 24;
 }
