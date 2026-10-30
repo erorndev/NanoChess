@@ -20,7 +20,3 @@ compile_commands.json
 
 # fastchess auto-saved tournament state
 config.json
-
-# Python
-__pycache__/
-*.pyc

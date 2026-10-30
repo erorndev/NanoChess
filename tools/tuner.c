@@ -1,8 +1,11 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include "attacks.h"
 #include "board.h"
 #include "evaluate.h"
 #include "movegen.h"
 #include "platform.h"
+#include "search.h"
+#include "tt.h"
 #include "types.h"
 #include "zobrist.h"
 
@@ -18,12 +21,12 @@ enum FeatIdx {
     F_MAT_BISHOP,
     F_MAT_ROOK,
     F_MAT_QUEEN,
-    F_PASSED_R1,
-    F_PASSED_PROT_R1 = F_PASSED_R1 + 6,
-    F_KNIGHT_MOB0 = F_PASSED_PROT_R1 + 6,
-    F_BISHOP_MOB0 = F_KNIGHT_MOB0 + 9,
-    F_ROOK_MOB0 = F_BISHOP_MOB0 + 14,
-    F_QUEEN_MOB0 = F_ROOK_MOB0 + 15,
+    F_PASSED_R1, // ranks 1..6 (6 features: R1..R6)
+    F_PASSED_PROT_R1 = F_PASSED_R1 + 6, // 6 features
+    F_KNIGHT_MOB0 = F_PASSED_PROT_R1 + 6, // 9 features
+    F_BISHOP_MOB0 = F_KNIGHT_MOB0 + 9, // 14 features
+    F_ROOK_MOB0 = F_BISHOP_MOB0 + 14, // 15 features
+    F_QUEEN_MOB0 = F_ROOK_MOB0 + 15, // 28 features
     F_PAWN_PHALANX = F_QUEEN_MOB0 + 28,
     F_PAWN_SUPPORTED,
     F_PAWN_DOUBLED,
@@ -52,18 +55,19 @@ struct SparseFeat {
 };
 
 struct Sample {
-    struct SparseFeat feats[128];
+    struct SparseFeat feats[96];
     int n_feats;
     double base_mg;
     double base_eg;
     int phase;
     double eg_scale;
-    double target;
+    double target; // Win probability from White's perspective in [0, 1]
 };
 
-// Baseline PeSTO tables
-static const int base_mg_piece[6] = { 82, 336, 363, 477, 1025, 0 };
-static const int base_eg_piece[6] = { 94, 277, 297, 512,  936, 0 };
+// Baseline PeSTO tables (fixed base + deltas)
+// clang-format off
+static const int base_mg_piece[6] = { 82, 337, 365, 477, 1025, 0 };
+static const int base_eg_piece[6] = { 94, 281, 297, 512,  936, 0 };
 static const int phase_weight[6]  = {  0,   1,   1,   2,    4, 0 };
 
 static const int16_t mg_table[6][64] = {
@@ -171,7 +175,7 @@ static const int16_t eg_table[6][64] = {
          -9,   2,   3,  -1,  -5, -13,   4, -20
     },
     {
-        -9,  22,  22,  27,  27,  19,  10,  20,
+         -9,  22,  22,  27,  27,  19,  10,  20,
         -17,  20,  32,  41,  58,  25,  30,   0,
         -20,   6,   9,  49,  47,  35,  19,   9,
           3,  22,  24,  45,  57,  40,  57,  36,
@@ -186,11 +190,12 @@ static const int16_t eg_table[6][64] = {
          10,  17,  23,  15,  20,  45,  44,  13,
          -8,  22,  24,  27,  26,  33,  26,   3,
         -18,  -4,  21,  24,  27,  23,   9, -11,
-        -19,  -3,  11,  21,  23,  16,   7,  -9,
+        -19, -3,   11,  21,  23,  16,   7,  -9,
         -27, -11,   4,  13,  14,   4,  -5, -17,
         -53, -34, -21, -11, -28, -14, -24, -43
     }
 };
+// clang-format on
 
 static bitboard_t t_file_mask[8];
 static bitboard_t t_adj_files_mask[8];
@@ -221,7 +226,7 @@ static void init_tuner_masks(void) {
         t_outpost_mask[WHITE][sq] = t_adj_files_mask[f] & w_front;
         t_outpost_mask[BLACK][sq] = t_adj_files_mask[f] & b_front;
         bitboard_t kz = king_attacks[sq] | (1ULL << sq);
-        t_king_zone_mask[WHITE][sq] = kz | ((kz << 8) & ~0ULL);
+        t_king_zone_mask[WHITE][sq] = kz | (kz << 8);
         t_king_zone_mask[BLACK][sq] = kz | (kz >> 8);
     }
 }
@@ -233,7 +238,7 @@ static inline int sq_dist(int s1, int s2) {
 }
 
 static void extract_side_feats(const struct Board *b, enum Color us, int sign, int16_t *dense,
-                                double *base_mg, double *base_eg) {
+                               double *base_mg, double *base_eg) {
     enum Color them = (enum Color)(us ^ 1);
     bitboard_t our_pawns = b->pieces[make_piece(us, PAWN)];
     bitboard_t their_pawns = b->pieces[make_piece(them, PAWN)];
@@ -410,21 +415,12 @@ static void extract_side_feats(const struct Board *b, enum Color us, int sign, i
     dense[F_PSQT_START + KING * 64 + tksq] += (int16_t)sign;
 
     int kf = our_ksq & 7;
-    int kr = our_ksq >> 3;
     if (kf <= FILE_C || kf >= FILE_F) {
         bitboard_t shield = king_attacks[our_ksq] & our_pawns;
         dense[F_KING_SHIELD] += (int16_t)(sign * popcount64(shield));
     }
     if (!(t_file_mask[kf] & our_pawns))
         dense[F_KING_OPEN] -= (int16_t)sign;
-
-    if (their_majors || popcount64(their_minors) >= 2) {
-        int adv_rank = us == WHITE ? kr : (7 - kr);
-        if (adv_rank >= RANK_3) {
-            *base_mg -= sign * 25 * (adv_rank - RANK_2);
-            *base_eg -= sign * 20 * (adv_rank - RANK_2);
-        }
-    }
 
     if (atk_count >= 2)
         *base_mg += sign * (atk_units * atk_units);
@@ -444,14 +440,8 @@ static bool extract_sample(const struct Board *b, double target_stm, struct Samp
     }
     if (phase > 24)
         phase = 24;
-
-    if (!pawns) {
-        if (phase <= 1)
-            return false;
-        if (phase == 2 &&
-            (popcount64(b->pieces[W_KNIGHT]) == 2 || popcount64(b->pieces[B_KNIGHT]) == 2))
-            return false;
-    }
+    if (!pawns && phase <= 2)
+        return false;
 
     int16_t dense[FEAT_COUNT];
     memset(dense, 0, sizeof(dense));
@@ -463,7 +453,7 @@ static bool extract_sample(const struct Board *b, double target_stm, struct Samp
 
     out->n_feats = 0;
     for (int i = 0; i < FEAT_COUNT; ++i) {
-        if (dense[i] != 0 && out->n_feats < 128) {
+        if (dense[i] != 0 && out->n_feats < 96) {
             out->feats[out->n_feats].idx = (uint16_t)i;
             out->feats[out->n_feats].coeff = dense[i];
             out->n_feats++;
@@ -579,6 +569,40 @@ static inline double sigmoid(double K, double eval_cp) {
     return 1.0 / (1.0 + pow(10.0, -K * eval_cp / 400.0));
 }
 
+// Quiet capture resolver so all samples are quiescent
+static void play_to_quiet(struct Board *b, int depth) {
+    if (depth <= 0 || in_check(b))
+        return;
+    struct MoveList caps;
+    generate_captures(b, &caps);
+    move_t best_cap = 0;
+    int best_gain = 0;
+    for (int i = 0; i < caps.count; ++i) {
+        move_t m = caps.moves[i];
+        if (!see(b, m, 0))
+            continue;
+        int gain = 100;
+        if (b->mailbox[move_to(m)] != NO_PIECE)
+            gain = base_mg_piece[piece_type(b->mailbox[move_to(m)])];
+        if (gain > best_gain) {
+            best_gain = gain;
+            best_cap = m;
+        }
+    }
+    if (best_cap != 0 && do_move(b, best_cap)) {
+        play_to_quiet(b, depth - 1);
+    }
+}
+
+static uint64_t prng_next(uint64_t *state) {
+    uint64_t x = *state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    *state = x;
+    return x * 0x2545F4914F6CDD1DULL;
+}
+
 static void enforce_monotonic(double *arr, int n) {
     for (int pass = 0; pass < 4; ++pass) {
         for (int i = 1; i < n; ++i) {
@@ -591,144 +615,159 @@ static void enforce_monotonic(double *arr, int n) {
     }
 }
 
-static double compute_mse_for_K(const struct Sample *samples, int n, const double *mg, const double *eg, double K) {
-    double total = 0.0;
-    for (int i = 0; i < n; ++i) {
-        double ev = eval_sample(&samples[i], mg, eg);
-        double pred = sigmoid(K, ev);
-        double diff = samples[i].target - pred;
-        total += diff * diff;
-    }
-    return total / n;
-}
+struct PendingPos {
+    struct Board qb;
+    int search_score;
+    enum Color stm;
+};
 
-static double optimize_K(const struct Sample *samples, int n, const double *mg, const double *eg) {
-    double best_k = 1.0;
-    double best_mse = 1e9;
-    for (double k = 0.4; k <= 3.0; k += 0.05) {
-        double mse = compute_mse_for_K(samples, n, mg, eg, k);
-        if (mse < best_mse) {
-            best_mse = mse;
-            best_k = k;
-        }
-    }
-    double start_k = best_k - 0.05;
-    double end_k = best_k + 0.05;
-    for (double k = start_k; k <= end_k; k += 0.005) {
-        double mse = compute_mse_for_K(samples, n, mg, eg, k);
-        if (mse < best_mse) {
-            best_mse = mse;
-            best_k = k;
-        }
-    }
-    return best_k;
-}
-
-int main(int argc, char **argv) {
+int main(void) {
     init_zobrist();
     init_attacks();
     init_eval();
+    init_tt(64);
+    init_search();
+    set_threads(1);
     init_tuner_masks();
 
-    int max_samples = 700000;
+    int max_samples = 16000;
     struct Sample *samples = (struct Sample *)calloc((size_t)max_samples, sizeof(struct Sample));
-    if (!samples) {
-        fprintf(stderr, "Failed to allocate memory for %d samples\n", max_samples);
-        return 1;
+    int n_samples = 0;
+
+    const char *seed_fens[256];
+    int n_seeds = 0;
+    seed_fens[n_seeds++] = START_FEN;
+
+    char epd_lines[200][128];
+    FILE *fp = fopen("tests/perftsuite.epd", "r");
+    if (!fp)
+        fp = fopen("../tests/perftsuite.epd", "r");
+    if (fp) {
+        char buf[256];
+        while (fgets(buf, sizeof(buf), fp) && n_seeds < 170) {
+            char *semi = strchr(buf, ';');
+            if (semi)
+                *semi = '\0';
+            strcpy(epd_lines[n_seeds], buf);
+            seed_fens[n_seeds] = epd_lines[n_seeds];
+            n_seeds++;
+        }
+        fclose(fp);
     }
 
-    const char *epd_path = (argc > 1) ? argv[1] : "build/quiet-labeled.epd";
-    FILE *fp = fopen(epd_path, "r");
-    if (!fp) {
-        fprintf(stderr, "Could not open %s\n", epd_path);
-        free(samples);
-        return 1;
-    }
-
-    printf("Loading quiet dataset from %s (target %d samples)...\n", epd_path, max_samples);
+    printf("Generating self-play WDL + search dataset from %d seed positions...\n", n_seeds);
     fflush(stdout);
 
-    char line[512];
-    int n_samples = 0;
-    int line_count = 0;
-    int mismatch_count = 0;
+    uint64_t rng = 0xCAFEBABE12345678ULL;
+    const double K = 1.12;
+    static struct PendingPos game_pos[128];
 
-    double mg0[FEAT_COUNT], eg0[FEAT_COUNT];
-    init_params(mg0, eg0);
-
-    while (fgets(line, sizeof(line), fp) && n_samples < max_samples) {
-        line_count++;
-        char *q1 = strchr(line, '"');
-        if (!q1) continue;
-        char *q2 = strchr(q1 + 1, '"');
-        if (!q2) continue;
-
-        double white_win = -1.0;
-        if (strncmp(q1 + 1, "1-0", 3) == 0) white_win = 1.0;
-        else if (strncmp(q1 + 1, "0-1", 3) == 0) white_win = 0.0;
-        else if (strncmp(q1 + 1, "1/2-1/2", 7) == 0) white_win = 0.5;
-        else continue;
-
-        char *c9 = strstr(line, " c9 ");
-        if (c9) *c9 = '\0';
-        else {
-            char *semi = strchr(line, ';');
-            if (semi) *semi = '\0';
-        }
-
-        size_t len = strlen(line);
-        while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\r' || line[len - 1] == '\n')) {
-            line[--len] = '\0';
-        }
-
+    for (int game = 0; game < 1100 && n_samples < max_samples; ++game) {
         struct Board b;
-        if (!set_fen(&b, line)) continue;
+        set_fen(&b, seed_fens[game % n_seeds]);
+        int n_game_pos = 0;
+        double white_outcome = 0.5;
+        bool decided = false;
 
-        double target_stm = (b.side == WHITE) ? white_win : (1.0 - white_win);
-        if (extract_sample(&b, target_stm, &samples[n_samples])) {
-            if (n_samples < 5000) {
-                int ev_eng = evaluate(&b);
-                double ev_s = eval_sample(&samples[n_samples], mg0, eg0);
-                if (abs(ev_eng - (int)round(ev_s)) > 1) {
-                    mismatch_count++;
-                    if (mismatch_count <= 3) {
-                        printf("Verification mismatch sample %d: engine=%d sample=%.1f FEN=%s\n",
-                               n_samples, ev_eng, ev_s, line);
+        for (int ply = 0; ply < 80; ++ply) {
+            struct MoveList legals;
+            generate_legal(&b, &legals);
+            if (legals.count == 0) {
+                if (in_check(&b))
+                    white_outcome = (b.side == WHITE) ? 0.0 : 1.0;
+                else
+                    white_outcome = 0.5;
+                decided = true;
+                break;
+            }
+            if (b.history[b.ply].halfmove >= 80 || is_repetition(&b)) {
+                white_outcome = 0.5;
+                decided = true;
+                break;
+            }
+
+            move_t play_m = 0;
+            if (ply < 6 || (ply < 14 && (prng_next(&rng) % 100) < 30)) {
+                play_m = legals.moves[prng_next(&rng) % (uint64_t)legals.count];
+            } else {
+                struct SearchLimits lim = {
+                    .depth = 4, .soft_time = 0, .hard_time = 0, .max_nodes = 0, .uci_output = false};
+                struct SearchResult sr = search_position(&b, &lim);
+                play_m = sr.best_move ? sr.best_move : legals.moves[0];
+
+                if (abs(sr.score) > 650) {
+                    int w_score = (b.side == WHITE) ? sr.score : -sr.score;
+                    white_outcome = w_score > 0 ? 1.0 : 0.0;
+                    decided = true;
+                    break;
+                }
+
+                if (!in_check(&b) && abs(sr.score) < 600 && n_game_pos < 128) {
+                    struct Board qb = b;
+                    play_to_quiet(&qb, 6);
+                    if (!in_check(&qb)) {
+                        int q_eval = evaluate(&qb);
+                        if (abs(q_eval) < 800) {
+                            game_pos[n_game_pos].qb = qb;
+                            game_pos[n_game_pos].search_score =
+                                (qb.side == b.side) ? sr.score : -sr.score;
+                            game_pos[n_game_pos].stm = qb.side;
+                            n_game_pos++;
+                        }
                     }
                 }
             }
-            n_samples++;
+
+            (void)do_move(&b, play_m);
+        }
+
+        if (!decided) {
+            int final_ev = evaluate(&b);
+            int w_ev = (b.side == WHITE) ? final_ev : -final_ev;
+            white_outcome = sigmoid(K, (double)w_ev);
+        }
+
+        for (int i = 0; i < n_game_pos && n_samples < max_samples; ++i) {
+            double wdl_stm =
+                (game_pos[i].stm == WHITE) ? white_outcome : (1.0 - white_outcome);
+            double search_stm = sigmoid(K, (double)game_pos[i].search_score);
+            double blended_target = 0.45 * wdl_stm + 0.55 * search_stm;
+            if (extract_sample(&game_pos[i].qb, blended_target, &samples[n_samples]))
+                n_samples++;
         }
     }
-    fclose(fp);
 
-    printf("Successfully loaded %d samples from %d lines. Eval verification mismatches: %d\n",
-           n_samples, line_count, mismatch_count);
-    fflush(stdout);
+    printf("Collected %d quiet WDL+search labeled positions.\n", n_samples);
 
-    int n_train = (n_samples * 85) / 100;
+    int n_train = (n_samples * 80) / 100;
     int n_val = n_samples - n_train;
 
-    printf("Optimizing K scaling parameter on baseline eval...\n");
-    fflush(stdout);
-    double K = optimize_K(samples, n_train, mg0, eg0);
-    printf("Optimal K: %.4f\n", K);
-
-    double init_train_mse = compute_mse_for_K(samples, n_train, mg0, eg0, K);
-    double init_val_mse = compute_mse_for_K(samples + n_train, n_val, mg0, eg0, K);
-    printf("Initial MSE -> Train: %.6f | Val: %.6f\n\n", init_train_mse, init_val_mse);
-    fflush(stdout);
-
+    double mg0[FEAT_COUNT], eg0[FEAT_COUNT];
     double mg[FEAT_COUNT], eg[FEAT_COUNT];
+    init_params(mg0, eg0);
     memcpy(mg, mg0, sizeof(mg));
     memcpy(eg, eg0, sizeof(eg));
 
+    double init_train_mse = 0.0, init_val_mse = 0.0;
+    for (int i = 0; i < n_samples; ++i) {
+        double ev = eval_sample(&samples[i], mg, eg);
+        double pred = sigmoid(K, ev);
+        double err = (samples[i].target - pred) * (samples[i].target - pred);
+        if (i < n_train)
+            init_train_mse += err;
+        else
+            init_val_mse += err;
+    }
+    init_train_mse /= n_train;
+    init_val_mse /= n_val;
+    printf("Initial MSE -> Train: %.6f | Val: %.6f\n", init_train_mse, init_val_mse);
+
     double m_mg[FEAT_COUNT] = {0}, v_mg[FEAT_COUNT] = {0};
     double m_eg[FEAT_COUNT] = {0}, v_eg[FEAT_COUNT] = {0};
-    const double lr = 0.5;
+    const double lr = 0.6;
     const double beta1 = 0.9, beta2 = 0.999, eps = 1e-8;
-    const double l2_reg = 1e-5;
-    const double l2_psqt = 1e-6;
+    const double l2_reg = 1.5e-6;
+    const double l2_psqt = 2.5e-7;
     const double scale_const = (K * log(10.0)) / 400.0;
 
     double best_val_mse = init_val_mse;
@@ -736,11 +775,7 @@ int main(int argc, char **argv) {
     memcpy(best_mg, mg, sizeof(mg));
     memcpy(best_eg, eg, sizeof(eg));
 
-    int epochs = 100;
-    printf("Running Adam optimizer for %d epochs...\n", epochs);
-    fflush(stdout);
-
-    for (int epoch = 1; epoch <= epochs; ++epoch) {
+    for (int epoch = 1; epoch <= 2000; ++epoch) {
         double g_mg[FEAT_COUNT] = {0};
         double g_eg[FEAT_COUNT] = {0};
 
@@ -760,7 +795,7 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Share 35% horizontal gradient across mirrored files for symmetric PSQTs
+        // Share 40% horizontal gradient across mirrored files on non-King PSQTs to prevent sparse square noise
         for (int pt = PAWN; pt <= QUEEN; ++pt) {
             int base = F_PSQT_START + pt * 64;
             for (int r = 0; r < 8; ++r) {
@@ -780,7 +815,6 @@ int main(int argc, char **argv) {
         double b1_t = 1.0 - pow(beta1, epoch);
         double b2_t = 1.0 - pow(beta2, epoch);
 
-        // Keep pawn material anchored at 82/94 (k starting at 1)
         for (int k = 1; k < FEAT_COUNT; ++k) {
             if (k >= F_PSQT_START && k < F_PSQT_START + 64) {
                 int sq = k - F_PSQT_START;
@@ -810,16 +844,6 @@ int main(int argc, char **argv) {
                     eg[k] = 1.0;
             }
         }
-
-        // Safety clamps on piece material values
-        if (mg[F_MAT_KNIGHT] < 280) mg[F_MAT_KNIGHT] = 280; if (mg[F_MAT_KNIGHT] > 400) mg[F_MAT_KNIGHT] = 400;
-        if (eg[F_MAT_KNIGHT] < 220) eg[F_MAT_KNIGHT] = 220; if (eg[F_MAT_KNIGHT] > 360) eg[F_MAT_KNIGHT] = 360;
-        if (mg[F_MAT_BISHOP] < 290) mg[F_MAT_BISHOP] = 290; if (mg[F_MAT_BISHOP] > 420) mg[F_MAT_BISHOP] = 420;
-        if (eg[F_MAT_BISHOP] < 240) eg[F_MAT_BISHOP] = 240; if (eg[F_MAT_BISHOP] > 380) eg[F_MAT_BISHOP] = 380;
-        if (mg[F_MAT_ROOK]   < 420) mg[F_MAT_ROOK]   = 420; if (mg[F_MAT_ROOK]   > 560) mg[F_MAT_ROOK]   = 560;
-        if (eg[F_MAT_ROOK]   < 450) eg[F_MAT_ROOK]   = 450; if (eg[F_MAT_ROOK]   > 600) eg[F_MAT_ROOK]   = 600;
-        if (mg[F_MAT_QUEEN]  < 880) mg[F_MAT_QUEEN]  = 880; if (mg[F_MAT_QUEEN]  > 1150) mg[F_MAT_QUEEN]  = 1150;
-        if (eg[F_MAT_QUEEN]  < 800) eg[F_MAT_QUEEN]  = 800; if (eg[F_MAT_QUEEN]  > 1100) eg[F_MAT_QUEEN]  = 1100;
 
         // [-16, +16] cp clamp per PSQT table
         for (int pt = 0; pt < 6; ++pt) {
@@ -854,102 +878,109 @@ int main(int argc, char **argv) {
         enforce_monotonic(&mg[F_QUEEN_MOB0], 28);
         enforce_monotonic(&eg[F_QUEEN_MOB0], 28);
 
-        double val_mse = compute_mse_for_K(samples + n_train, n_val, mg, eg, K);
+        double val_mse = 0.0;
+        for (int i = n_train; i < n_samples; ++i) {
+            double ev = eval_sample(&samples[i], mg, eg);
+            double pred = sigmoid(K, ev);
+            double err = (samples[i].target - pred) * (samples[i].target - pred);
+            val_mse += err;
+        }
+        val_mse /= n_val;
         if (val_mse < best_val_mse) {
             best_val_mse = val_mse;
             memcpy(best_mg, mg, sizeof(mg));
             memcpy(best_eg, eg, sizeof(eg));
-        }
-
-        if (epoch % 10 == 0 || epoch == epochs) {
-            printf("Epoch %2d/%d -> Val MSE: %.6f (best: %.6f)\n", epoch, epochs, val_mse, best_val_mse);
-            fflush(stdout);
         }
     }
 
     memcpy(mg, best_mg, sizeof(mg));
     memcpy(eg, best_eg, sizeof(eg));
 
-    double final_train_mse = compute_mse_for_K(samples, n_train, mg, eg, K);
-    double final_val_mse = compute_mse_for_K(samples + n_train, n_val, mg, eg, K);
-    printf("\nOptimization Finished!\n");
-    printf("Final MSE -> Train: %.6f (delta: %+.6f) | Val: %.6f (delta: %+.6f)\n\n",
-           final_train_mse, final_train_mse - init_train_mse,
-           final_val_mse, final_val_mse - init_val_mse);
+    double final_train_mse = 0.0, final_val_mse = 0.0;
+    for (int i = 0; i < n_samples; ++i) {
+        double ev = eval_sample(&samples[i], mg, eg);
+        double pred = sigmoid(K, ev);
+        double err = (samples[i].target - pred) * (samples[i].target - pred);
+        if (i < n_train)
+            final_train_mse += err;
+        else
+            final_val_mse += err;
+    }
+    final_train_mse /= n_train;
+    final_val_mse /= n_val;
+    printf("Final MSE   -> Train: %.6f | Val: %.6f\n\n", final_train_mse, final_val_mse);
 
-    // Write tuned parameters to build/tuned_eval.inc
-    FILE *out_fp = fopen("build/tuned_eval.inc", "w");
-    if (!out_fp) out_fp = stdout;
-
+    // Output C code for src/evaluate.c
     const char *pt_names[6] = {"PAWN", "KNIGHT", "BISHOP", "ROOK", "QUEEN", "KING"};
-    fprintf(out_fp, "static const int mg_piece_val[6] = { %d, %d, %d, %d, %d, 0 };\n",
-            (int)round(mg[F_MAT_PAWN]), (int)round(mg[F_MAT_KNIGHT]), (int)round(mg[F_MAT_BISHOP]),
-            (int)round(mg[F_MAT_ROOK]), (int)round(mg[F_MAT_QUEEN]));
-    fprintf(out_fp, "static const int eg_piece_val[6] = { %d, %d, %d, %d, %d, 0 };\n",
-            (int)round(eg[F_MAT_PAWN]), (int)round(eg[F_MAT_KNIGHT]), (int)round(eg[F_MAT_BISHOP]),
-            (int)round(eg[F_MAT_ROOK]), (int)round(eg[F_MAT_QUEEN]));
-    fprintf(out_fp, "static const int phase_weight[6] = {  0,   1,   1,   2,    4, 0 };\n\n");
+    printf("// --- TUNED PARAMETERS ---\n");
+    printf("static const int mg_piece_val[6] = { %d, %d, %d, %d, %d, 0 };\n",
+           (int)round(mg[F_MAT_PAWN]), (int)round(mg[F_MAT_KNIGHT]), (int)round(mg[F_MAT_BISHOP]),
+           (int)round(mg[F_MAT_ROOK]), (int)round(mg[F_MAT_QUEEN]));
+    printf("static const int eg_piece_val[6] = { %d, %d, %d, %d, %d, 0 };\n",
+           (int)round(eg[F_MAT_PAWN]), (int)round(eg[F_MAT_KNIGHT]), (int)round(eg[F_MAT_BISHOP]),
+           (int)round(eg[F_MAT_ROOK]), (int)round(eg[F_MAT_QUEEN]));
+    printf("static const int phase_weight[6] = {  0,   1,   1,   2,    4, 0 };\n\n");
 
-    fprintf(out_fp, "static const int16_t mg_table[6][64] = {\n");
+    printf("static const int16_t mg_table[6][64] = {\n");
     for (int pt = 0; pt < 6; ++pt) {
-        fprintf(out_fp, "    { // %s\n", pt_names[pt]);
+        printf("    { // %s\n", pt_names[pt]);
         for (int r = 0; r < 8; ++r) {
-            fprintf(out_fp, "        ");
+            printf("        ");
             for (int f = 0; f < 8; ++f) {
                 int sq = r * 8 + f;
                 int v = (int)round(mg[F_PSQT_START + pt * 64 + sq]);
-                fprintf(out_fp, "%4d%s", v, (r == 7 && f == 7) ? "" : (f == 7 ? ",\n" : ", "));
+                printf("%4d%s", v, (r == 7 && f == 7) ? "" : (f == 7 ? ",\n" : ", "));
             }
         }
-        fprintf(out_fp, "\n    }%s\n", pt == 5 ? "" : ",");
+        printf("\n    }%s\n", pt == 5 ? "" : ",");
     }
-    fprintf(out_fp, "};\n\n");
+    printf("};\n\n");
 
-    fprintf(out_fp, "static const int16_t eg_table[6][64] = {\n");
+    printf("static const int16_t eg_table[6][64] = {\n");
     for (int pt = 0; pt < 6; ++pt) {
-        fprintf(out_fp, "    { // %s\n", pt_names[pt]);
+        printf("    { // %s\n", pt_names[pt]);
         for (int r = 0; r < 8; ++r) {
-            fprintf(out_fp, "        ");
+            printf("        ");
             for (int f = 0; f < 8; ++f) {
                 int sq = r * 8 + f;
                 int v = (int)round(eg[F_PSQT_START + pt * 64 + sq]);
-                fprintf(out_fp, "%4d%s", v, (r == 7 && f == 7) ? "" : (f == 7 ? ",\n" : ", "));
+                printf("%4d%s", v, (r == 7 && f == 7) ? "" : (f == 7 ? ",\n" : ", "));
             }
         }
-        fprintf(out_fp, "\n    }%s\n", pt == 5 ? "" : ",");
+        printf("\n    }%s\n", pt == 5 ? "" : ",");
     }
-    fprintf(out_fp, "};\n\n");
+    printf("};\n\n");
 
-    fprintf(out_fp, "static const int32_t passed_rank_bonus[8] = {\n    S(0, 0), ");
+    printf("static const int32_t passed_rank_bonus[8] = {\n    S(0, 0), ");
     for (int i = 0; i < 6; ++i)
-        fprintf(out_fp, "S(%d, %d), ", (int)round(mg[F_PASSED_R1 + i]), (int)round(eg[F_PASSED_R1 + i]));
-    fprintf(out_fp, "S(0, 0)\n};\n\n");
+        printf("S(%d, %d), ", (int)round(mg[F_PASSED_R1 + i]), (int)round(eg[F_PASSED_R1 + i]));
+    printf("S(0, 0)\n};\n\n");
 
-    fprintf(out_fp, "static const int32_t passed_prot_bonus[8] = {\n    S(0, 0), ");
+    printf("static const int32_t passed_prot_bonus[8] = {\n    S(0, 0), ");
     for (int i = 0; i < 6; ++i)
-        fprintf(out_fp, "S(%d, %d), ", (int)round(mg[F_PASSED_PROT_R1 + i]),
-                (int)round(eg[F_PASSED_PROT_R1 + i]));
-    fprintf(out_fp, "S(0, 0)\n};\n\n");
+        printf("S(%d, %d), ", (int)round(mg[F_PASSED_PROT_R1 + i]),
+               (int)round(eg[F_PASSED_PROT_R1 + i]));
+    printf("S(0, 0)\n};\n\n");
 
-    fprintf(out_fp, "static const int32_t knight_mob[9] = {\n    ");
+    printf("static const int32_t knight_mob[9] = {\n    ");
     for (int i = 0; i < 9; ++i)
-        fprintf(out_fp, "S(%d, %d)%s", (int)round(mg[F_KNIGHT_MOB0 + i]), (int)round(eg[F_KNIGHT_MOB0 + i]),
-                i == 8 ? "\n};\n\n" : ", ");
+        printf("S(%d, %d)%s", (int)round(mg[F_KNIGHT_MOB0 + i]), (int)round(eg[F_KNIGHT_MOB0 + i]),
+               i == 8 ? "\n};\n\n" : ", ");
 
-    fprintf(out_fp, "static const int32_t bishop_mob[14] = {\n    ");
+    printf("static const int32_t bishop_mob[14] = {\n    ");
     for (int i = 0; i < 14; ++i)
-        fprintf(out_fp, "S(%d, %d)%s", (int)round(mg[F_BISHOP_MOB0 + i]), (int)round(eg[F_BISHOP_MOB0 + i]),
-                i == 13 ? "\n};\n\n" : (i == 6 ? ",\n    " : ", "));
+        printf("S(%d, %d)%s", (int)round(mg[F_BISHOP_MOB0 + i]), (int)round(eg[F_BISHOP_MOB0 + i]),
+               i == 13 ? "\n};\n\n" : (i == 6 ? ",\n    " : ", "));
 
-    fprintf(out_fp, "static const int32_t rook_mob[15] = {\n    ");
+    printf("static const int32_t rook_mob[15] = {\n    ");
     for (int i = 0; i < 15; ++i)
-        fprintf(out_fp, "S(%d, %d)%s", (int)round(mg[F_ROOK_MOB0 + i]), (int)round(eg[F_ROOK_MOB0 + i]),
-                i == 14 ? "\n};\n\n" : (i == 7 ? ",\n    " : ", "));
+        printf("S(%d, %d)%s", (int)round(mg[F_ROOK_MOB0 + i]), (int)round(eg[F_ROOK_MOB0 + i]),
+               i == 14 ? "\n};\n\n" : (i == 7 ? ",\n    " : ", "));
 
-    fprintf(out_fp, "static const int32_t queen_mob[28] = {\n    ");
+    printf("static const int32_t queen_mob[28] = {\n    ");
     for (int i = 0; i < 28; ++i)
-        fprintf(out_fp, "S(%d, %d)%s", (int)round(mg[F_QUEEN_MOB0 + i]), (int)round(eg[F_QUEEN_MOB0 + i]),
-                i == 27 ? "\n};\n\n" : ((i % 7 == 6) ? ",\n    " : ", "));
+        printf("S(%d, %d)%s", (int)round(mg[F_QUEEN_MOB0 + i]), (int)round(eg[F_QUEEN_MOB0 + i]),
+               i == 27 ? "\n};\n\n" : ((i % 7 == 6) ? ",\n    " : ", "));
 
     const char *scalar_names[] = {
         "pawn_phalanx_bonus",   "pawn_supported_bonus", "pawn_doubled_penalty",
@@ -960,15 +991,11 @@ int main(int argc, char **argv) {
         "king_shield_bonus",    "king_open_penalty",    "tempo_bonus"};
     for (int i = 0; i < 18; ++i) {
         int idx = F_PAWN_PHALANX + i;
-        fprintf(out_fp, "static const int32_t %-22s = S(%d, %d);\n", scalar_names[i], (int)round(mg[idx]),
-                (int)round(eg[idx]));
-    }
-
-    if (out_fp != stdout) {
-        fclose(out_fp);
-        printf("Tuned evaluation parameters successfully saved to build/tuned_eval.inc\n");
+        printf("static const int32_t %-22s = S(%d, %d);\n", scalar_names[i], (int)round(mg[idx]),
+               (int)round(eg[idx]));
     }
 
     free(samples);
+    free_tt();
     return 0;
 }

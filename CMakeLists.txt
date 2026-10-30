@@ -85,14 +85,6 @@ add_executable(openings
     src/movegen.c
     src/book.c
 )
-add_executable(tuner
-    tools/tuner.c
-    src/zobrist.c
-    src/attacks.c
-    src/board.c
-    src/movegen.c
-    src/evaluate.c
-)
 
 if(NOT MSVC)
     target_link_libraries(nanochess PRIVATE m)
@@ -103,7 +95,6 @@ if(NOT MSVC)
     target_link_libraries(eval PRIVATE m)
     target_link_libraries(search PRIVATE m)
     target_link_libraries(kaufman PRIVATE m)
-    target_link_libraries(tuner PRIVATE m)
 endif()
 
 enable_testing()
