@@ -144,8 +144,11 @@ struct SearchLimits allocate_time(const struct Board *b, uint64_t time_left, uin
                     : (time_left < 30000 ? (16 + (pieces * 16) / 32) : (20 + (pieces * 20) / 32));
 
     uint64_t base = usable / (uint64_t)moves;
-    uint64_t scale_num = 16 + (uint64_t)((32 - pieces) / 2);
+    uint64_t scale_num = 16 + (uint64_t)((32 - pieces) / 3);
     uint64_t optimum = (base * scale_num) / 16 + (inc * 4 / 5);
+
+    if (!inc && pieces <= 8 && optimum > usable / 20)
+        optimum = usable / 20;
 
     if (time_left < 1500) {
         uint64_t cap = usable * 4 / 10 + inc * 7 / 10;

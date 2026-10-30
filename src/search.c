@@ -801,9 +801,11 @@ static int worker_entry(void *arg) {
         if (w->id == 0 && ctx->soft_limit > 0) {
             uint64_t elapsed = get_time_ms() - ctx->start_time;
             uint64_t target_soft = ctx->soft_limit;
+            if (score <= -500)
+                target_soft = (target_soft * 60) / 100;
             if (d >= 6 && stable_count >= 3)
                 target_soft = (target_soft * 65) / 100;
-            else if (d >= 6 && score_drop >= 40 && ctx->hard_limit > 0) {
+            else if (d >= 6 && score_drop >= 40 && score > -500 && ctx->hard_limit > 0) {
                 uint64_t panic_soft = (target_soft * 150) / 100;
                 target_soft = panic_soft < ctx->hard_limit ? panic_soft : ctx->hard_limit;
             }
