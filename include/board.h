@@ -20,6 +20,7 @@ struct Board {
     bitboard_t all;
     enum Piece mailbox[64];
     enum Color side;
+    int16_t acc[COLOR_NB][32];
     struct StateInfo history[MAX_PLY];
     int ply;
 };

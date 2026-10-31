@@ -20,3 +20,6 @@ compile_commands.json
 
 # fastchess auto-saved tournament state
 config.json
+
+# Private NNUE training pipeline & datasets
+nnue/

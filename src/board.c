@@ -1,5 +1,6 @@
 #include "board.h"
 #include "attacks.h"
+#include "nnue.h"
 #include "platform.h"
 #include "zobrist.h"
 
@@ -146,6 +147,7 @@ bool set_fen(struct Board *b, const char *fen) {
     }
     b->history[0].halfmove = (uint8_t)halfmove;
     b->history[0].key = compute_key(b);
+    nnue_refresh(b);
     return true;
 }
 
@@ -196,11 +198,13 @@ bool do_move(struct Board *b, move_t m) {
         b->occ[them] ^= 1ULL << cap_sq;
         b->mailbox[cap_sq] = NO_PIECE;
         key ^= zobrist.pieces[captured][cap_sq];
+        nnue_sub_piece(b, captured, cap_sq);
     } else if (move_is_capture(m)) {
         captured = b->mailbox[to];
         b->pieces[captured] ^= 1ULL << to;
         b->occ[them] ^= 1ULL << to;
         key ^= zobrist.pieces[captured][to];
+        nnue_sub_piece(b, captured, to);
     }
 
     enum Piece placed = move_is_promotion(m) ? make_piece(us, move_promoted_type(m)) : piece;
@@ -208,6 +212,13 @@ bool do_move(struct Board *b, move_t m) {
     b->occ[us] |= 1ULL << to;
     b->mailbox[to] = placed;
     key ^= zobrist.pieces[placed][to];
+
+    if (move_is_promotion(m)) {
+        nnue_sub_piece(b, piece, from);
+        nnue_add_piece(b, placed, to);
+    } else {
+        nnue_move_piece(b, piece, from, to);
+    }
 
     if (flags == MOVE_CASTLE) {
         enum Square r_from, r_to;
@@ -230,6 +241,7 @@ bool do_move(struct Board *b, move_t m) {
         b->mailbox[r_from] = NO_PIECE;
         b->mailbox[r_to] = rook;
         key ^= zobrist.pieces[rook][r_from] ^ zobrist.pieces[rook][r_to];
+        nnue_move_piece(b, rook, r_from, r_to);
     }
 
     b->all = b->occ[WHITE] | b->occ[BLACK];
@@ -285,15 +297,24 @@ void undo_move(struct Board *b, move_t m) {
     b->mailbox[from] = piece;
     b->mailbox[to] = NO_PIECE;
 
+    if (move_is_promotion(m)) {
+        nnue_sub_piece(b, placed, to);
+        nnue_add_piece(b, piece, from);
+    } else {
+        nnue_move_piece(b, piece, to, from);
+    }
+
     if (flags == MOVE_EN_PASSANT) {
         enum Square cap_sq = (enum Square)(us == WHITE ? to - 8 : to + 8);
         b->pieces[captured] |= 1ULL << cap_sq;
         b->occ[them] |= 1ULL << cap_sq;
         b->mailbox[cap_sq] = captured;
+        nnue_add_piece(b, captured, cap_sq);
     } else if (captured != NO_PIECE) {
         b->pieces[captured] |= 1ULL << to;
         b->occ[them] |= 1ULL << to;
         b->mailbox[to] = captured;
+        nnue_add_piece(b, captured, to);
     }
 
     if (flags == MOVE_CASTLE) {
@@ -316,6 +337,7 @@ void undo_move(struct Board *b, move_t m) {
         b->occ[us] ^= (1ULL << r_from) | (1ULL << r_to);
         b->mailbox[r_to] = NO_PIECE;
         b->mailbox[r_from] = rook;
+        nnue_move_piece(b, rook, r_to, r_from);
     }
 
     b->all = b->occ[WHITE] | b->occ[BLACK];

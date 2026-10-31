@@ -33,6 +33,7 @@ set(ENGINE_SOURCES
     src/board.c
     src/movegen.c
     src/evaluate.c
+    src/nnue.c
     src/tt.c
     src/search.c
     src/uci.c
@@ -75,6 +76,7 @@ add_executable(book_compiler
     src/zobrist.c
     src/attacks.c
     src/board.c
+    src/nnue.c
     src/movegen.c
 )
 
@@ -83,6 +85,7 @@ add_executable(openings
     src/zobrist.c
     src/attacks.c
     src/board.c
+    src/nnue.c
     src/movegen.c
     src/book.c
     src/time.c
