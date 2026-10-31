@@ -717,6 +717,8 @@ static int worker_entry(void *arg) {
     move_t last_best_move = 0;
     int stable_count = 0;
 
+    int move_changes = 0;
+
     for (int d = 1; d <= w->max_depth; ++d) {
         if (d > 1 && atomic_load_explicit(&search_stopped, memory_order_relaxed))
             break;
@@ -758,13 +760,18 @@ static int worker_entry(void *arg) {
             break;
 
         move_t current_best_move = ctx->ss[0].pv_len > 0 ? ctx->ss[0].pv[0] : 0;
-        if (current_best_move == last_best_move)
-            stable_count++;
-        else
-            stable_count = 0;
-        last_best_move = current_best_move;
+        if (current_best_move) {
+            if (d > 1 && current_best_move != last_best_move) {
+                if (d >= 5)
+                    move_changes++;
+                stable_count = 0;
+            } else if (d > 1) {
+                stable_count++;
+            }
+            last_best_move = current_best_move;
+        }
 
-        int score_drop = prev_score - score;
+        int score_drop = (d > 1) ? (prev_score - score) : 0;
         prev_score = score;
         w->result.score = score;
         w->result.depth = search_d;
@@ -801,13 +808,25 @@ static int worker_entry(void *arg) {
         if (w->id == 0 && ctx->soft_limit > 0) {
             uint64_t elapsed = get_time_ms() - ctx->start_time;
             uint64_t target_soft = ctx->soft_limit;
-            if (score <= -500)
+            if (score <= -500) {
                 target_soft = (target_soft * 60) / 100;
-            if (d >= 6 && stable_count >= 3)
-                target_soft = (target_soft * 65) / 100;
-            else if (d >= 6 && score_drop >= 40 && score > -500 && ctx->hard_limit > 0) {
-                uint64_t panic_soft = (target_soft * 150) / 100;
-                target_soft = panic_soft < ctx->hard_limit ? panic_soft : ctx->hard_limit;
+            } else if (d >= 6) {
+                if (stable_count >= 3 && score_drop < 40) {
+                    target_soft = (target_soft * 65) / 100;
+                } else if (ctx->hard_limit > 0) {
+                    int mult = 100;
+                    if (score_drop >= 40 && score < 400) {
+                        mult = (score_drop >= 100) ? 160 : 145;
+                        if (stable_count == 0)
+                            mult += 15;
+                    } else if (d >= 7 && stable_count == 0 && move_changes >= 2) {
+                        mult = 125;
+                    }
+                    if (mult != 100) {
+                        uint64_t panic_soft = (target_soft * (uint64_t)mult) / 100;
+                        target_soft = panic_soft < ctx->hard_limit ? panic_soft : ctx->hard_limit;
+                    }
+                }
             }
             if (elapsed >= target_soft)
                 break;
