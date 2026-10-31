@@ -3,6 +3,7 @@
 #include "evaluate.h"
 #include "movegen.h"
 #include "platform.h"
+#include "time.h"
 #include "tt.h"
 
 #include <math.h>

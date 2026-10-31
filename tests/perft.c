@@ -3,6 +3,7 @@
 #include "board.h"
 #include "movegen.h"
 #include "platform.h"
+#include "time.h"
 #include "types.h"
 #include "zobrist.h"
 

@@ -22,13 +22,11 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <io.h>
 #include <windows.h>
 #else
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
-#include <sys/select.h>
 #include <time.h>
 #include <unistd.h>
 #endif
@@ -145,27 +143,5 @@ static inline void thread_join(thread_t t) {
         r += 1;
     }
     return r;
-#endif
-}
-
-[[nodiscard]] uint64_t get_time_ms(void);
-void sleep_ms(unsigned ms);
-
-[[nodiscard]] static inline bool input_available(void) {
-#if defined(_WIN32)
-    static HANDLE h_stdin = NULL;
-    if (!h_stdin)
-        h_stdin = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD bytes = 0;
-    if (PeekNamedPipe(h_stdin, NULL, 0, NULL, &bytes, NULL)) {
-        return bytes > 0;
-    }
-    return false;
-#else
-    struct timeval tv = {0, 0};
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(STDIN_FILENO, &fds);
-    return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
 #endif
 }

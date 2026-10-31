@@ -3,6 +3,7 @@
 #include "book.h"
 #include "movegen.h"
 #include "platform.h"
+#include "time.h"
 #include "zobrist.h"
 
 #include <stdio.h>

@@ -1,5 +1,6 @@
 #include "book.h"
 #include "platform.h"
+#include "time.h"
 #include "zobrist.h"
 
 #include <stdlib.h>

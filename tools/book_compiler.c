@@ -226,6 +226,7 @@ int main(void) {
     printf("// Total unique (key, move) entries: %d\n\n", total_entries);
     printf("#include \"book.h\"\n");
     printf("#include \"platform.h\"\n");
+    printf("#include \"time.h\"\n");
     printf("#include \"zobrist.h\"\n\n");
     printf("#include <stdlib.h>\n\n");
     printf("bool option_own_book = true;\n\n");

@@ -5,6 +5,7 @@
 #include "movegen.h"
 #include "platform.h"
 #include "search.h"
+#include "time.h"
 #include "tt.h"
 #include "types.h"
 #include "zobrist.h"
