@@ -1,5 +1,6 @@
 #include "evaluate.h"
 #include "attacks.h"
+#include "nnue.h"
 #include "platform.h"
 
 #include <stdlib.h>
@@ -688,5 +689,10 @@ int evaluate(const struct Board *b) {
     if (phase < 24)
         eg = (eg * scale_factor(b, eg)) / 64;
 
-    return (mg * phase + eg * (24 - phase)) / 24;
+    int hce = (mg * phase + eg * (24 - phase)) / 24;
+    int sf = scale_factor(b, eg_val(score));
+    int nnue = evaluate_nnue(b);
+    if (phase < 24)
+        nnue = (nnue * sf) / 64;
+    return (hce + nnue) / 2;
 }

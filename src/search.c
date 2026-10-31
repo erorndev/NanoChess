@@ -50,6 +50,7 @@ struct Worker {
     struct Board board;
     struct SearchContext ctx;
     int16_t history[COLOR_NB][64][64];
+    int16_t capthist[12][64][6];
     int16_t conthist[12][64][12][64];
     move_t killers[MAX_SEARCH_DEPTH + 4][2];
     move_t countermoves[13][64];
@@ -94,6 +95,7 @@ void clear_search(void) {
         return;
     for (int i = 0; i < option_threads; ++i) {
         memset(workers[i].history, 0, sizeof(workers[i].history));
+        memset(workers[i].capthist, 0, sizeof(workers[i].capthist));
         memset(workers[i].conthist, 0, sizeof(workers[i].conthist));
         memset(workers[i].killers, 0, sizeof(workers[i].killers));
         memset(workers[i].countermoves, 0, sizeof(workers[i].countermoves));
@@ -265,15 +267,17 @@ static void score_moves(const struct Worker *w, struct MoveList *list, move_t tt
             int victim = PAWN;
             if (move_flags(m) != MOVE_EN_PASSANT && b->mailbox[move_to(m)] != NO_PIECE)
                 victim = piece_type(b->mailbox[move_to(m)]);
-            int attacker = piece_type(b->mailbox[move_from(m)]);
+            enum Piece pc = b->mailbox[move_from(m)];
+            int attacker = piece_type(pc);
             int mvv_lva = victim * 16 - attacker;
             if (move_is_promotion(m))
                 mvv_lva += move_promoted_type(m) * 16;
+            int ch = (pc < NO_PIECE && victim < 6) ? (w->capthist[pc][move_to(m)][victim] / 32) : 0;
 
             if (see(b, m, 0))
-                list->scores[i] = 1000000 + mvv_lva;
+                list->scores[i] = 1000000 + mvv_lva * 32 + ch;
             else
-                list->scores[i] = -100000 + mvv_lva;
+                list->scores[i] = -100000 + mvv_lva * 32 + ch;
         } else if (m == k1) {
             list->scores[i] = 900000;
         } else if (m == k2) {
@@ -524,7 +528,8 @@ static int negamax(struct Worker *w, int depth, int alpha, int beta, int ply, mo
         // Null Move Pruning
         if (depth >= 3 && prev_move != 0 && static_eval >= beta && has_non_pawns(b, b->side)) {
             int r =
-                3 + depth / 4 + ((static_eval - beta) / 200 > 3 ? 3 : (static_eval - beta) / 200);
+                3 + depth / 4 + ((static_eval - beta) / 200 > 3 ? 3 : (static_eval - beta) / 200) +
+                (!improving ? 1 : 0);
             ctx->ss[ply].move = 0;
             ctx->ss[ply].moved_piece = NO_PIECE;
             do_null_move(b);
@@ -548,6 +553,8 @@ static int negamax(struct Worker *w, int depth, int alpha, int beta, int ply, mo
 
     move_t quiets_tried[64];
     int quiet_count = 0;
+    move_t caps_tried[64];
+    int cap_count = 0;
 
     int best_score = -INF;
     move_t best_move = 0;
@@ -664,6 +671,7 @@ static int negamax(struct Worker *w, int depth, int alpha, int beta, int ply, mo
                 }
 
                 if (score >= beta) {
+                    int bonus = 16 * depth * depth;
                     if (!is_tactical) {
                         if (w->killers[ply][0] != m) {
                             w->killers[ply][1] = w->killers[ply][0];
@@ -675,7 +683,6 @@ static int negamax(struct Worker *w, int depth, int alpha, int beta, int ply, mo
                             if (pp != NO_PIECE)
                                 w->countermoves[pp][pto] = m;
                         }
-                        int bonus = 16 * depth * depth;
                         update_history_entry(&w->history[b->side][move_from(m)][move_to(m)], bonus);
                         update_conthist(w, ply, moved_pc, move_to(m), bonus);
                         for (int q = 0; q < quiet_count; ++q) {
@@ -685,6 +692,23 @@ static int negamax(struct Worker *w, int depth, int alpha, int beta, int ply, mo
                                                  -bonus);
                             update_conthist(w, ply, qpc, move_to(qm), -bonus);
                         }
+                    } else if (move_is_capture(m)) {
+                        int victim = (move_flags(m) != MOVE_EN_PASSANT &&
+                                      b->mailbox[move_to(m)] != NO_PIECE)
+                                         ? piece_type(b->mailbox[move_to(m)])
+                                         : PAWN;
+                        if (moved_pc < NO_PIECE && victim < 6)
+                            update_history_entry(&w->capthist[moved_pc][move_to(m)][victim], bonus);
+                    }
+                    for (int c = 0; c < cap_count; ++c) {
+                        move_t cmv = caps_tried[c];
+                        enum Piece cpc = b->mailbox[move_from(cmv)];
+                        int cvic = (move_flags(cmv) != MOVE_EN_PASSANT &&
+                                    b->mailbox[move_to(cmv)] != NO_PIECE)
+                                       ? piece_type(b->mailbox[move_to(cmv)])
+                                       : PAWN;
+                        if (cpc < NO_PIECE && cvic < 6)
+                            update_history_entry(&w->capthist[cpc][move_to(cmv)][cvic], -bonus);
                     }
                     break;
                 }
@@ -693,6 +717,8 @@ static int negamax(struct Worker *w, int depth, int alpha, int beta, int ply, mo
 
         if (!is_tactical && quiet_count < 64)
             quiets_tried[quiet_count++] = m;
+        else if (move_is_capture(m) && cap_count < 64)
+            caps_tried[cap_count++] = m;
     }
 
     if (legal_moves == 0) {
