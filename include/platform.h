@@ -148,32 +148,8 @@ static inline void thread_join(thread_t t) {
 #endif
 }
 
-[[nodiscard]] static inline uint64_t get_time_ms(void) {
-#if defined(_WIN32)
-    static LARGE_INTEGER freq;
-    static bool init = false;
-    if (!init) {
-        QueryPerformanceFrequency(&freq);
-        init = true;
-    }
-    LARGE_INTEGER counter;
-    QueryPerformanceCounter(&counter);
-    return (uint64_t)((counter.QuadPart * 1000) / freq.QuadPart);
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
-#endif
-}
-
-static inline void sleep_ms(unsigned ms) {
-#if defined(_WIN32)
-    Sleep(ms);
-#else
-    struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000L};
-    nanosleep(&ts, NULL);
-#endif
-}
+[[nodiscard]] uint64_t get_time_ms(void);
+void sleep_ms(unsigned ms);
 
 [[nodiscard]] static inline bool input_available(void) {
 #if defined(_WIN32)

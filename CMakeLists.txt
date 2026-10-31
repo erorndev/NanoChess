@@ -37,6 +37,7 @@ set(ENGINE_SOURCES
     src/search.c
     src/uci.c
     src/book.c
+    src/time.c
 )
 
 add_executable(nanochess
@@ -84,6 +85,7 @@ add_executable(openings
     src/board.c
     src/movegen.c
     src/book.c
+    src/time.c
 )
 
 if(NOT MSVC)

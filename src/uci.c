@@ -16,7 +16,6 @@
 #define ENGINE_NAME "NanoChess"
 #define ENGINE_AUTHOR "Erorn"
 
-int option_move_overhead = 15;
 
 static thread_t search_thread;
 static bool search_running = false;
@@ -128,54 +127,6 @@ static void parse_position(struct Board *b, char *line) {
     }
 }
 
-struct SearchLimits allocate_time(const struct Board *b, uint64_t time_left, uint64_t inc, int movestogo) {
-    struct SearchLimits lim = {0};
-    if (time_left == 0)
-        return lim;
-
-    const uint64_t overhead = (uint64_t)option_move_overhead;
-    uint64_t usable = (time_left > overhead) ? (time_left - overhead) : (time_left * 3 / 4);
-    if (usable < 1)
-        usable = 1;
-
-    int pieces = popcount64(b->all);
-    int moves = (movestogo > 0 && movestogo < 50)
-                    ? movestogo
-                    : (time_left < 30000 ? (16 + (pieces * 16) / 32) : (20 + (pieces * 20) / 32));
-
-    uint64_t base = usable / (uint64_t)moves;
-    uint64_t scale_num = 16 + (uint64_t)((32 - pieces) / 3);
-    uint64_t optimum = (base * scale_num) / 16 + (inc * 4 / 5);
-
-    if (!inc && pieces <= 8 && optimum > usable / 20)
-        optimum = usable / 20;
-
-    if (time_left < 1500) {
-        uint64_t cap = usable * 4 / 10 + inc * 7 / 10;
-        if (optimum > cap)
-            optimum = cap;
-    }
-
-    if (optimum > usable * 8 / 10)
-        optimum = usable * 8 / 10;
-    if (optimum < 1)
-        optimum = 1;
-
-    uint64_t hard = (time_left < 1500) ? (usable / 2) : (usable * 3 / 4);
-    uint64_t hard_scale = optimum * 5 / 2 + inc * 4 / 5;
-    if (hard_scale < hard)
-        hard = hard_scale;
-    if (hard < optimum)
-        hard = optimum;
-    if (hard > usable)
-        hard = usable;
-    if (hard < 1)
-        hard = 1;
-
-    lim.soft_time = optimum;
-    lim.hard_time = hard;
-    return lim;
-}
 
 static void parse_go(struct Board *b, char *line) {
     struct SearchLimits lim = {
