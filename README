@@ -1,0 +1,27 @@
+NanoChess
+====================
+A small C23 chess engine with an elo rating of around 2640. With a
+compiled size of just under 81KB, there is no bloat or external
+dependencies and it easily fits onto a floppy disk. It can be compiled on
+almost any architecture such as amd64, arm64, PowerPC and i386.
+
+No huge neural networks or weight files are used. Instead, NanoChess has a
+pure classical handcrafted evaluation function. This uses PeSTO piece square
+tables along with pawn structure, piece mobility curves, outpost,
+tactical, king safety and tempo terms. As no matrix multiplication is used
+or any neural functions, the evaluation is pretty quick.
+
+The search function is an Alpha-Beta Negamax engine with Principal
+Variation Search. It uses many modern tournament features such as Aspiration
+windows, 1 ply & 2 ply continuation history, Singular Extensions, Multi-Cut
+pruning, Adaptive Late Move Reductions and Null-Move Pruning. Check
+evasion and Static Exchange pruning is used in the quiescence search.
+
+Multi-threading is supported using a Lockless Lazy SMP engine. It can run
+using between 1 and 64 threads.
+
+The engine is easy to use with any UCI interface such as En Croissant,
+Arena, Cutechess and Banksia. The Hash size is configurable between 1 and
+1024MB (Default 32MB). The number of Threads can be set. OwnBook can be
+toggled and Move Overhead adjusted. To compile the engine just run build.bat
+on Windows or cmake on Linux/macOS.
